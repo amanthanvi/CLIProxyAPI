@@ -24,6 +24,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	requestlogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executionregistry"
@@ -699,9 +700,10 @@ type websocketPinnedFailoverExecutor struct {
 }
 
 type websocketBootstrapFallbackExecutor struct {
-	mu       sync.Mutex
-	authIDs  []string
-	payloads map[string][][]byte
+	mu                   sync.Mutex
+	authIDs              []string
+	payloads             map[string][][]byte
+	deferredBodyRetained chan bool
 }
 
 type websocketDirectCaptureExecutor struct {
@@ -740,7 +742,7 @@ func (e *websocketBootstrapFallbackExecutor) Execute(context.Context, *coreauth.
 	return coreexecutor.Response{}, errors.New("not implemented")
 }
 
-func (e *websocketBootstrapFallbackExecutor) ExecuteStream(_ context.Context, auth *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+func (e *websocketBootstrapFallbackExecutor) ExecuteStream(ctx context.Context, auth *coreauth.Auth, req coreexecutor.Request, _ coreexecutor.Options) (*coreexecutor.StreamResult, error) {
 	authID := ""
 	if auth != nil {
 		authID = auth.ID
@@ -753,6 +755,18 @@ func (e *websocketBootstrapFallbackExecutor) ExecuteStream(_ context.Context, au
 	e.authIDs = append(e.authIDs, authID)
 	e.payloads[authID] = append(e.payloads[authID], bytes.Clone(req.Payload))
 	e.mu.Unlock()
+	if authID == "auth-http" && e.deferredBodyRetained != nil {
+		helps.RecordAPIRequest(ctx, &internalconfig.Config{}, helps.UpstreamRequestLog{
+			URL: "https://api.example.com/v1/responses", Method: http.MethodPost,
+			Body: req.Payload,
+		})
+		ginCtx, _ := ctx.Value("gin").(*gin.Context)
+		if ginCtx == nil {
+			return nil, errors.New("missing Gin context for HTTP fallback")
+		}
+		_, retained := ginCtx.Get(requestlogging.DeferredAPIRequestContextKey)
+		e.deferredBodyRetained <- retained
+	}
 
 	chunks := make(chan coreexecutor.StreamChunk, 1)
 	if authID == "auth-ws" {
@@ -6205,7 +6219,7 @@ func TestResponsesWebsocketStripsGenerateWhenWebsocketAttemptFallsBackToHTTP(t *
 	gin.SetMode(gin.TestMode)
 
 	selector := &orderedWebsocketSelector{order: []string{"auth-ws", "auth-http", "auth-http"}}
-	executor := &websocketBootstrapFallbackExecutor{}
+	executor := &websocketBootstrapFallbackExecutor{deferredBodyRetained: make(chan bool, 2)}
 	manager := coreauth.NewManager(nil, selector, nil)
 	manager.RegisterExecutor(executor)
 
@@ -6294,6 +6308,62 @@ func TestResponsesWebsocketStripsGenerateWhenWebsocketAttemptFallsBackToHTTP(t *
 	}
 	if got := executor.AuthIDs(); len(got) != 3 || got[2] != "auth-http" {
 		t.Fatalf("selected auth IDs after HTTP retry = %v, want [auth-ws auth-http auth-http]", got)
+	}
+	for range 2 {
+		select {
+		case retained := <-executor.deferredBodyRetained:
+			if retained {
+				t.Fatal("HTTP fallback retained an upstream body after downstream upgrade")
+			}
+		default:
+			t.Fatal("HTTP fallback did not report deferred body state")
+		}
+	}
+}
+
+func TestResponsesWebsocketMarksOnlySuccessfulDownstreamUpgrade(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil))
+	marked := make(chan bool, 2)
+	router := gin.New()
+	router.GET("/v1/responses", func(c *gin.Context) {
+		h.ResponsesWebsocket(c)
+		value, _ := c.Get(requestlogging.ResponsesWebsocketUpgradedContextKey)
+		marked <- value == true
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/v1/responses")
+	if err != nil {
+		t.Fatalf("failed upgrade request: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("failed upgrade status = %d, want 400", response.StatusCode)
+	}
+	select {
+	case got := <-marked:
+		if got {
+			t.Fatal("failed upgrade marked as successful")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("failed upgrade handler did not return")
+	}
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses"
+	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("successful upgrade dial: %v", err)
+	}
+	_ = conn.Close()
+	select {
+	case got := <-marked:
+		if !got {
+			t.Fatal("successful upgrade did not mark Gin context")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("successful upgrade handler did not return")
 	}
 }
 

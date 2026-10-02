@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -270,6 +271,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	c.Set(logging.ResponsesWebsocketUpgradedContextKey, true)
 	var duplexInput <-chan cliproxyexecutor.WebsocketInput
 	if h != nil && h.Cfg != nil && h.Cfg.CodexResponseSteering {
 		socketCtx, cancelSocket := context.WithCancel(c.Request.Context())

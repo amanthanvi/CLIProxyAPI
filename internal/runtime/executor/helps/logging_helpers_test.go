@@ -71,6 +71,46 @@ func TestRecordAPIRequestClonesDeferredBodyWhenRequestLogDisabled(t *testing.T) 
 	}
 }
 
+func TestRecordAPIRequestDoesNotDeferAfterResponsesWebsocketUpgrade(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Set(logging.ResponsesWebsocketUpgradedContextKey, true)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+
+	for range 2 {
+		RecordAPIRequest(ctx, &config.Config{}, UpstreamRequestLog{
+			URL:    "https://api.example.com/v1/responses",
+			Method: http.MethodPost,
+			Body:   []byte(`{"model":"fixture"}`),
+		})
+	}
+	if _, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey); exists {
+		t.Fatal("upgraded websocket retained deferred upstream request bodies")
+	}
+	if _, exists := ginCtx.Get(deferredAPIRequestBytesKey); exists {
+		t.Fatal("upgraded websocket incremented deferred body budget")
+	}
+}
+
+func TestRecordAPIRequestKeepsFullLoggingAfterResponsesWebsocketUpgrade(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginCtx.Set(logging.ResponsesWebsocketUpgradedContextKey, true)
+	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+
+	RecordAPIRequest(ctx, &config.Config{SDKConfig: config.SDKConfig{RequestLog: true}},
+		UpstreamRequestLog{URL: "https://api.example.com/v1/responses",
+			Method: http.MethodPost, Body: []byte(`{"model":"fixture"}`)})
+	value, exists := ginCtx.Get(apiAttemptsKey)
+	if !exists {
+		t.Fatal("full logging lost upstream request after websocket upgrade")
+	}
+	attempts, ok := value.([]*upstreamAttempt)
+	if !ok || len(attempts) != 1 || !strings.Contains(attempts[0].request, `{"model":"fixture"}`) {
+		t.Fatal("full logging did not preserve upstream request body")
+	}
+}
+
 func TestRecordAPIResponseMetadataStoresHeadersWhenRequestLogDisabled(t *testing.T) {
 	ctx := logging.WithResponseHeadersHolder(context.Background())
 	headers := http.Header{}
