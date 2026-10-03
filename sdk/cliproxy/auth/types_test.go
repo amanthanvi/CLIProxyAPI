@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+func TestAuthCloneIsolatesEmptyMetadata(t *testing.T) {
+	original := &Auth{Metadata: map[string]any{}}
+	clone := original.Clone()
+	clone.Metadata["account_uuid"] = "clone-only"
+	if _, ok := original.Metadata["account_uuid"]; ok {
+		t.Fatal("clone mutated original empty metadata map")
+	}
+}
+
 func TestRequestRetryOverride(t *testing.T) {
 	var unset *Auth
 	if got, ok := unset.RequestRetryOverride(); ok || got != 0 {

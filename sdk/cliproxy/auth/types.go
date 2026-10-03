@@ -297,7 +297,7 @@ func (a *Auth) Clone() *Auth {
 			copyAuth.Attributes[key] = value
 		}
 	}
-	if len(a.Metadata) > 0 {
+	if a.Metadata != nil {
 		copyAuth.Metadata = make(map[string]any, len(a.Metadata))
 		for key, value := range a.Metadata {
 			copyAuth.Metadata[key] = value
