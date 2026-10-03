@@ -8,6 +8,46 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestClaudeChatServiceTierUsesUpstreamSpeed(t *testing.T) {
+	request := []byte(`{"model":"claude-opus-5-5","service_tier":"fast"}`)
+	for _, tc := range []struct {
+		name  string
+		speed string
+		want  string
+	}{
+		{name: "fast", speed: `"fast"`, want: "priority"},
+		{name: "standard", speed: `"standard"`, want: "default"},
+		{name: "missing", speed: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := `{"input_tokens":1,"output_tokens":1`
+			if tc.speed != "" {
+				usage += `,"speed":` + tc.speed
+			}
+			usage += `}`
+			start := []byte(`data: {"type":"message_start","message":{"id":"msg_fast","model":"claude-opus-5-5","usage":` + usage + `}}`)
+			stop := []byte(`data: {"type":"message_stop"}`)
+			var state any
+			ConvertClaudeResponseToOpenAI(context.Background(), "claude-opus-5-5", request, nil, start, &state)
+			chunks := ConvertClaudeResponseToOpenAI(context.Background(), "claude-opus-5-5", request, nil, stop, &state)
+			var streamTier string
+			for _, chunk := range chunks {
+				if tier := gjson.GetBytes(chunk, "service_tier"); tier.Exists() {
+					streamTier = tier.String()
+				}
+			}
+			if streamTier != tc.want {
+				t.Fatalf("stream tier = %q, want %q", streamTier, tc.want)
+			}
+			buffer := append(append(append([]byte{}, start...), '\n'), stop...)
+			nonStream := ConvertClaudeResponseToOpenAINonStream(context.Background(), "claude-opus-5-5", request, nil, buffer, nil)
+			if got := gjson.GetBytes(nonStream, "service_tier").String(); got != tc.want {
+				t.Fatalf("nonstream tier = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func assertCachedCreationTokens(t *testing.T, payload []byte, want int64) {
 	t.Helper()
 

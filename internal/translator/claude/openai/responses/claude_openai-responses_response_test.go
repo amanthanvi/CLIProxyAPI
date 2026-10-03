@@ -31,6 +31,48 @@ func parseClaudeResponsesSSEEvent(t *testing.T, chunk []byte) (string, gjson.Res
 	return event, gjson.Parse(data)
 }
 
+func TestClaudeResponsesServiceTierUsesUpstreamSpeed(t *testing.T) {
+	t.Parallel()
+	request := []byte(`{"model":"claude-opus-5-5","service_tier":"fast"}`)
+	for _, tc := range []struct {
+		name  string
+		speed string
+		want  string
+	}{
+		{name: "fast", speed: `"fast"`, want: "priority"},
+		{name: "standard", speed: `"standard"`, want: "default"},
+		{name: "missing", speed: "", want: ""},
+		{name: "unknown", speed: `"other"`, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := `{"input_tokens":1,"output_tokens":1`
+			if tc.speed != "" {
+				usage += `,"speed":` + tc.speed
+			}
+			usage += `}`
+			start := []byte(`data: {"type":"message_start","message":{"id":"msg_fast","usage":` + usage + `}}`)
+			stop := []byte(`data: {"type":"message_stop"}`)
+			var state any
+			ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-opus-5-5", request, nil, start, &state)
+			chunks := ConvertClaudeResponseToOpenAIResponses(context.Background(), "claude-opus-5-5", request, nil, stop, &state)
+			var streamTier string
+			for _, chunk := range chunks {
+				if event, data := parseClaudeResponsesSSEEvent(t, chunk); event == "response.completed" {
+					streamTier = data.Get("response.service_tier").String()
+				}
+			}
+			if streamTier != tc.want {
+				t.Fatalf("stream tier = %q, want %q", streamTier, tc.want)
+			}
+			buffer := append(append(append([]byte{}, start...), '\n'), stop...)
+			nonStream := ConvertClaudeResponseToOpenAIResponsesNonStream(context.Background(), "claude-opus-5-5", request, nil, buffer, nil)
+			if got := gjson.GetBytes(nonStream, "service_tier").String(); got != tc.want {
+				t.Fatalf("nonstream tier = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestConvertClaudeResponseToOpenAIResponses_CreatedIncludesOriginalRequestModel(t *testing.T) {
 	request := []byte(`{"model":"original-claude-model"}`)
 	translatedRequest := []byte(`{"model":"translated-claude-model"}`)

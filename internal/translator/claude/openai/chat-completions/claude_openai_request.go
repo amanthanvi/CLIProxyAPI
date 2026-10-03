@@ -53,6 +53,9 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 	out, _ = sjson.SetBytes(out, "metadata.user_id", userID)
 
 	root := gjson.ParseBytes(rawJSON)
+	if tier := root.Get("service_tier"); tier.Type == gjson.String && (tier.String() == "fast" || tier.String() == "priority") {
+		out, _ = sjson.SetBytes(out, "speed", "fast")
+	}
 
 	// Convert OpenAI reasoning_effort to Claude thinking config.
 	if v := root.Get("reasoning_effort"); v.Exists() {

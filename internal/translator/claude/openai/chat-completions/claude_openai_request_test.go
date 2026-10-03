@@ -7,6 +7,31 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestOpenAIChatServiceTierToClaudeSpeed(t *testing.T) {
+	for _, tc := range []struct {
+		tier string
+		want string
+	}{
+		{tier: "fast", want: "fast"},
+		{tier: "priority", want: "fast"},
+		{tier: "default", want: ""},
+		{tier: "flex", want: ""},
+	} {
+		t.Run(tc.tier, func(t *testing.T) {
+			request := []byte(`{"model":"claude-opus-5-5","service_tier":"` + tc.tier + `","messages":[{"role":"user","content":"hi"}]}`)
+			for _, stream := range []bool{false, true} {
+				out := ConvertOpenAIRequestToClaude("claude-opus-5-5", request, stream)
+				if got := gjson.GetBytes(out, "speed").String(); got != tc.want {
+					t.Fatalf("stream=%t speed=%q, want %q", stream, got, tc.want)
+				}
+				if got := gjson.GetBytes(out, "model").String(); got != "claude-opus-5-5" {
+					t.Fatalf("stream=%t model=%q", stream, got)
+				}
+			}
+		})
+	}
+}
+
 func TestConvertOpenAIRequestToClaudeWithCompat_GroupsAssistantThinkingTextAndTools(t *testing.T) {
 	inputJSON := []byte(`{
 		"messages":[

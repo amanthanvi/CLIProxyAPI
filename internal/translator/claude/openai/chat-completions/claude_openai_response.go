@@ -38,6 +38,7 @@ type claudeUsageTokens struct {
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
 	HasUsage                 bool
+	ServiceTier              string
 }
 
 // ToolCallAccumulator holds the state for accumulating tool call data
@@ -53,6 +54,16 @@ func (u *claudeUsageTokens) Merge(usage gjson.Result) {
 		return
 	}
 	u.HasUsage = true
+	if speed := usage.Get("speed"); speed.Exists() {
+		switch speed.String() {
+		case "fast":
+			u.ServiceTier = "priority"
+		case "standard":
+			u.ServiceTier = "default"
+		default:
+			u.ServiceTier = ""
+		}
+	}
 	if inputTokens := usage.Get("input_tokens"); inputTokens.Exists() {
 		u.InputTokens = inputTokens.Int()
 	}
@@ -250,6 +261,9 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 		// Handle usage information for token counts
 		if usage := root.Get("usage"); usage.Exists() {
 			(*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.Merge(usage)
+			if tier := (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.ServiceTier; tier != "" {
+				template, _ = sjson.SetBytes(template, "service_tier", tier)
+			}
 			promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.OpenAIUsage()
 			template, _ = sjson.SetBytes(template, "usage.prompt_tokens", promptTokens)
 			template, _ = sjson.SetBytes(template, "usage.completion_tokens", completionTokens)
@@ -266,6 +280,9 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 		if p.Usage.HasUsage && !p.TrailingUsageSent {
 			p.TrailingUsageSent = true
 			usageTemplate := []byte(`{"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[]}`)
+			if p.Usage.ServiceTier != "" {
+				usageTemplate, _ = sjson.SetBytes(usageTemplate, "service_tier", p.Usage.ServiceTier)
+			}
 			if p.ResponseID != "" {
 				usageTemplate, _ = sjson.SetBytes(usageTemplate, "id", p.ResponseID)
 			}
@@ -440,6 +457,9 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 	}
 
 	if usageTokens.HasUsage {
+		if usageTokens.ServiceTier != "" {
+			out, _ = sjson.SetBytes(out, "service_tier", usageTokens.ServiceTier)
+		}
 		promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := usageTokens.OpenAIUsage()
 		out, _ = sjson.SetBytes(out, "usage.prompt_tokens", promptTokens)
 		out, _ = sjson.SetBytes(out, "usage.completion_tokens", completionTokens)

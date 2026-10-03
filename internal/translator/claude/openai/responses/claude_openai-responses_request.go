@@ -119,7 +119,7 @@ func convertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	out, _ = sjson.SetBytes(out, "stream", stream)
 
 	// Service Tier -> Speed
-	if st := root.Get("service_tier"); st.Type == gjson.String && st.String() == "priority" {
+	if st := root.Get("service_tier"); st.Type == gjson.String && (st.String() == "priority" || st.String() == "fast") {
 		out, _ = sjson.SetBytes(out, "speed", "fast")
 	}
 

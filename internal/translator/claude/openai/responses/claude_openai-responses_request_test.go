@@ -1807,6 +1807,13 @@ func TestConvertOpenAIResponsesRequestToClaude_ServiceTierToSpeed(t *testing.T) 
 			wantSpeedExist: true,
 		},
 		{
+			name:           "fast service_tier emits fast speed",
+			serviceTier:    "fast",
+			hasServiceTier: true,
+			wantSpeed:      "fast",
+			wantSpeedExist: true,
+		},
+		{
 			name:            "priority with low reasoning effort",
 			serviceTier:     "priority",
 			hasServiceTier:  true,
