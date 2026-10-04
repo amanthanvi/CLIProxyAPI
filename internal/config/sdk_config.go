@@ -73,6 +73,12 @@ type SDKConfig struct {
 type ClaudeCodeConfig struct {
 	// DisableCloakingModelList disables model ID cloaking in Anthropic model list responses.
 	DisableCloakingModelList bool `yaml:"disable-cloaking-model-list" json:"disable-cloaking-model-list"`
+
+	// BareModelPrefix qualifies unprefixed claude-* model IDs on the Claude Messages endpoints
+	// as "<prefix>/<model>" when the bare ID has no route and that exact route is served only
+	// by the claude provider. It is skipped in Home mode and while a plugin model router is
+	// active. Empty (default) leaves bare model IDs unchanged.
+	BareModelPrefix string `yaml:"bare-model-prefix,omitempty" json:"bare-model-prefix,omitempty"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.

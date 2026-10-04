@@ -220,6 +220,13 @@ claude:
 claude-code:
   # When true, return original model IDs in Anthropic model list responses instead of cloaked IDs.
   disable-cloaking-model-list: false
+  # Optional credential prefix for bare Claude model IDs on /v1/messages and /v1/messages/count_tokens.
+  # A bare "claude-*" ID that has no route of its own is sent as "<prefix>/<model>" (thinking suffix
+  # kept) only when that exact route is registered solely by the claude provider. Explicitly
+  # prefixed IDs, other endpoints, and the model list are unchanged. Empty (default) disables it.
+  # Skipped in Home mode and while a plugin model router is active; those own routing.
+  # Intended for force-model-prefix: true with clients that send bare Claude IDs.
+  # bare-model-prefix: "claude"
 
 # disable-image-generation supports: false (default), true, "chat", or "passthrough".
 # - true: disable image_generation everywhere (also returns 404 for /v1/images/generations and /v1/images/edits).

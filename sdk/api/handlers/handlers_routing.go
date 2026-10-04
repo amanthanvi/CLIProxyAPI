@@ -322,6 +322,12 @@ func modelRoutersEnabled(host PluginModelRouterHost, skipPluginID string) bool {
 	return false
 }
 
+// HasActiveModelRouters reports whether a plugin model router can claim requests before
+// registry-based model resolution.
+func (h *BaseAPIHandler) HasActiveModelRouters() bool {
+	return modelRoutersEnabled(h.modelRouterHost(), "")
+}
+
 func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, modelName string, rawJSON []byte, stream bool, execOptions modelExecutionOptions) modelRouteDecision {
 	var decision modelRouteDecision
 	host := h.modelRouterHost()
