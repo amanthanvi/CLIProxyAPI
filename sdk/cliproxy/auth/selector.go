@@ -81,10 +81,18 @@ const (
 )
 
 type modelCooldownError struct {
-	model    string
-	resetIn  time.Duration
-	provider string
-	cause    error
+	model              string
+	resetIn            time.Duration
+	provider           string
+	cause              error
+	claudeResetHeaders http.Header
+}
+
+func (e *modelCooldownError) ClaudeRateLimitResponseHeaders() http.Header {
+	if e == nil {
+		return nil
+	}
+	return e.claudeResetHeaders.Clone()
 }
 
 // NewModelCooldownError creates an error representing model-level cooldown.
@@ -536,7 +544,9 @@ func getAvailableAuthsWithPriorityMode(auths []*Auth, provider, model string, no
 			if resetIn < 0 {
 				resetIn = 0
 			}
-			return nil, newModelCooldownError(model, providerForError, resetIn)
+			err := newModelCooldownError(model, providerForError, resetIn)
+			err.claudeResetHeaders = claudeResetHeadersForPool(auths, func(*Auth) string { return model }, earliest, now)
+			return nil, err
 		}
 		return nil, newAuthUnavailableError(earliest, now)
 	}

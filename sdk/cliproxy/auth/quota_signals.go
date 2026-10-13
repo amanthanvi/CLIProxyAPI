@@ -48,6 +48,13 @@ func (q *QuotaState) ObserveResponseHeadersForProvider(provider string, headers 
 	if observedAt.IsZero() {
 		observedAt = time.Now()
 	}
+	// Canonicalizing a snapshot must not turn rejected malformed or ambiguous
+	// native headers into reporting provenance. Preserve the other observations.
+	if strings.EqualFold(strings.TrimSpace(provider), "claude") &&
+		(next["Anthropic-Ratelimit-Unified-Status"] == "rejected" || ambiguousClaudeResetHeaders(headers)) &&
+		len(FilterClaudeRateLimitResponseHeaders(headers, observedAt)) == 0 {
+		delete(next, "Anthropic-Ratelimit-Unified-Reset")
+	}
 	q.Signals = next
 	q.ObservedAt = observedAt
 	return true
