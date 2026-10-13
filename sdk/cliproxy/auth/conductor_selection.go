@@ -608,7 +608,9 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
 			if resetIn < 0 {
 				resetIn = 0
 			}
-			return nil, newModelCooldownErrorWithCause(routeModel, providerForError, resetIn, lastCandidateErr)
+			err := newModelCooldownErrorWithCause(routeModel, providerForError, resetIn, lastCandidateErr)
+			err.claudeResetHeaders = claudeResetHeadersForPool(auths, func(candidate *Auth) string { return m.selectionModelForAuth(candidate, routeModel) }, earliest, now)
+			return nil, err
 		}
 		if unauthorizedCount == len(auths) && len(auths) > 0 {
 			terminalCause := latestUnauthorizedCandidateError(auths)
@@ -719,7 +721,9 @@ func restoreModelCooldownErrorModel(err error, requestedModel string) error {
 	if !errors.As(err, &cooldownErr) || cooldownErr == nil || cooldownErr.model != "" {
 		return err
 	}
-	return newModelCooldownErrorWithCause(requestedModel, cooldownErr.provider, cooldownErr.resetIn, cooldownErr.cause)
+	restored := newModelCooldownErrorWithCause(requestedModel, cooldownErr.provider, cooldownErr.resetIn, cooldownErr.cause)
+	restored.claudeResetHeaders = cooldownErr.claudeResetHeaders.Clone()
+	return restored
 }
 
 func latestUnauthorizedCandidateError(auths []*Auth) error {

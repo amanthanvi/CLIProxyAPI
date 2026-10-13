@@ -671,6 +671,11 @@ func (claudeEntitlementError) IsCredentialScoped() bool {
 type claudeRateLimitError struct {
 	statusErr
 	credentialScoped bool
+	resetHeaders     http.Header
+}
+
+func (e claudeRateLimitError) ClaudeRateLimitResponseHeaders() http.Header {
+	return e.resetHeaders.Clone()
 }
 
 func (e claudeRateLimitError) IsCredentialScoped() bool {
@@ -702,14 +707,15 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
 	}
 	err := statusErr{code: statusCode, msg: string(body), retryAfter: retryAfter}
 	if statusCode == http.StatusTooManyRequests {
+		resetHeaders := cliproxyauth.FilterClaudeRateLimitResponseHeaders(headers, time.Now())
 		if !modelLevelCooling && helps.ClaudeHeadersIndicateUnifiedRateLimitRejection(headers) {
-			return claudeRateLimitError{statusErr: err, credentialScoped: true}
+			return claudeRateLimitError{statusErr: err, credentialScoped: true, resetHeaders: resetHeaders}
 		}
 		if claudeBodyIndicatesFastModeCredits(body) {
 			return claudeEntitlementError{err}
 		}
 		// Ordinary model-level Claude 429 (not a unified 5h/7d rejection)
-		return claudeRateLimitError{statusErr: err, credentialScoped: false}
+		return claudeRateLimitError{statusErr: err, credentialScoped: false, resetHeaders: resetHeaders}
 	}
 	return err
 }

@@ -630,6 +630,7 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 	cooldownCount := 0
 	unauthorizedCount := 0
 	earliest := time.Time{}
+	var claudeResetHeaders http.Header
 
 	var latestModelTime time.Time
 	var latestModelAuthID string
@@ -654,6 +655,10 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 		unauthorizedCount += localUnauthorizedCount
 		if !localEarliest.IsZero() && (earliest.IsZero() || localEarliest.Before(earliest)) {
 			earliest = localEarliest
+			claudeResetHeaders = shard.claudeResetHeadersLocked(earliest, now, predicate)
+			if len(providers) != 1 {
+				claudeResetHeaders = nil
+			}
 		}
 		candModelErr, candModelTime, candModelAuthID, candAuthErr, candAuthTime, candAuthAuthID := shard.candidateErrorsLocked(model, predicate)
 		if candModelErr != nil {
@@ -687,7 +692,9 @@ func (s *authScheduler) mixedUnavailableErrorLocked(providers []string, model st
 		if resetIn < 0 {
 			resetIn = 0
 		}
-		return newModelCooldownErrorWithCause(model, "", resetIn, lastCandidateErr)
+		err := newModelCooldownErrorWithCause(model, "", resetIn, lastCandidateErr)
+		err.claudeResetHeaders = claudeResetHeaders
+		return err
 	}
 	if unauthorizedCount == total {
 		terminalCause := latestAuthErr
@@ -1426,7 +1433,9 @@ func (m *modelScheduler) unavailableErrorLocked(provider, model string, predicat
 		if resetIn < 0 {
 			resetIn = 0
 		}
-		return newModelCooldownErrorWithCause(model, providerForError, resetIn, lastCandidateErr)
+		err := newModelCooldownErrorWithCause(model, providerForError, resetIn, lastCandidateErr)
+		err.claudeResetHeaders = m.claudeResetHeadersLocked(earliest, now, predicate)
+		return err
 	}
 	if unauthorizedCount == total {
 		terminalCause := authErr
