@@ -160,6 +160,8 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 
 			payloads := websocketJSONPayloadsFromChunk(chunk)
 			for i := range payloads {
+				// Correlate controls before downstream can react to this event.
+				opts.localInterrupt.observe(payloads[i])
 				if gjson.GetBytes(payloads[i], "type").String() == "response.created" {
 					responseStarted = true
 					completed = false

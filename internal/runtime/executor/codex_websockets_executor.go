@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -221,6 +222,13 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 	// Account checks may call back into the auth manager; do not hold session
 	// locks across them. Take the lifecycle snapshot only after they finish.
 	authEnabled := cliproxyexecutor.WebsocketAuthEnabled(ctx, authID)
+	// A control can wait behind a payload write while the response completes.
+	// Decide only after writer ownership, before committing control bytes.
+	sess.writeMu.Lock()
+	defer sess.writeMu.Unlock()
+	if testWebsocketWritePayloadHook != nil {
+		testWebsocketWritePayloadHook(conn)
+	}
 	sess.connMu.Lock()
 	if sess.conn != conn {
 		sess.connMu.Unlock()
@@ -230,6 +238,7 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 	_, alreadyTerminal := sess.terminalResponseIDs[gjson.GetBytes(payload, "response_id").String()]
 	alreadyTerminal = alreadyTerminal && sess.responseStateConn == conn
 	active := sess.activeConn == conn && sess.activeCh != nil
+	activeResponseMatches := sess.responseStateConn == conn && sess.activeResponseID == gjson.GetBytes(payload, "response_id").String() && sess.activeResponseID != ""
 	var disconnectErr error
 	if sess.terminalConn == conn {
 		disconnectErr = sess.terminalErr
@@ -253,7 +262,10 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 	if !authEnabled {
 		return fmt.Errorf("websocket credential is no longer enabled")
 	}
-	if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
+	if !activeResponseMatches {
+		return fmt.Errorf("response.interrupt does not target the active response")
+	}
+	if errWrite := sess.writeMessageLocked(conn, websocket.TextMessage, payload); errWrite != nil {
 		return errWrite
 	}
 	log.WithField("outcome", "forwarded").Debug("codex websockets: response.interrupt handled")

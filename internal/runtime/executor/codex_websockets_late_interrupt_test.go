@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -98,6 +99,9 @@ func TestInterruptExecutionSessionCompletesDuringAuthCheck(t *testing.T) {
 func TestInterruptExecutionSessionAfterTerminal(t *testing.T) {
 	for _, terminal := range []string{"response.completed", "response.done", "response.incomplete", "response.failed"} {
 		t.Run(terminal, func(t *testing.T) {
+			startR2 := make(chan struct{})
+			var startR2Once sync.Once
+			start := func() { startR2Once.Do(func() { close(startR2) }) }
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				conn, errUpgrade := (&websocket.Upgrader{}).Upgrade(w, r, nil)
 				if errUpgrade != nil {
@@ -118,6 +122,11 @@ func TestInterruptExecutionSessionAfterTerminal(t *testing.T) {
 						return
 					}
 				}
+				<-startR2
+				if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.created","response":{"id":"r2"}}`)); errWrite != nil {
+					t.Errorf("write r2 created: %v", errWrite)
+					return
+				}
 				// The only forwarded interrupt must target the active r2, not r1.
 				_, payload, errRead := conn.ReadMessage()
 				if errRead != nil {
@@ -132,6 +141,7 @@ func TestInterruptExecutionSessionAfterTerminal(t *testing.T) {
 				_, _, _ = conn.ReadMessage()
 			}))
 			defer upstream.Close()
+			defer start()
 			client, _, errDial := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(upstream.URL, "http"), nil)
 			if errDial != nil {
 				t.Fatal(errDial)
@@ -173,6 +183,8 @@ func TestInterruptExecutionSessionAfterTerminal(t *testing.T) {
 				t.Fatalf("unknown idle interrupt = %v, want ErrNoActiveUpstreamWebsocket for local HTTP fallback", errUnknown)
 			}
 			readCh = sess.activate(client)
+			start()
+			read()
 			if errLate := exec.InterruptExecutionSession(context.Background(), sessionID, late); errLate != nil {
 				t.Fatalf("late r1 during r2 = %v", errLate)
 			}

@@ -78,6 +78,7 @@ type codexWebsocketSession struct {
 	terminalErr  error
 
 	responseStateConn   *websocket.Conn
+	activeResponseID    string
 	terminalResponseIDs map[string]struct{}
 
 	readerConn *websocket.Conn
@@ -117,6 +118,7 @@ func (s *codexWebsocketSession) setActiveLocked(conn *websocket.Conn, ch chan co
 	}
 	s.activeConn = conn
 	s.activeCh = ch
+	s.activeResponseID = ""
 	if conn != nil && ch != nil {
 		activeCtx, activeCancel := context.WithCancel(context.Background())
 		s.activeDone = activeCtx.Done()
@@ -149,6 +151,7 @@ func (s *codexWebsocketSession) resetTerminalError(conn *websocket.Conn) {
 	s.terminalErr = nil
 	if s.responseStateConn != conn {
 		s.responseStateConn = conn
+		s.activeResponseID = ""
 		s.terminalResponseIDs = make(map[string]struct{})
 	}
 	s.activeMu.Unlock()
@@ -228,6 +231,10 @@ func (s *codexWebsocketSession) writeMessage(conn *websocket.Conn, msgType int, 
 	if testWebsocketWritePayloadHook != nil {
 		testWebsocketWritePayloadHook(conn)
 	}
+	return s.writeMessageLocked(conn, msgType, payload)
+}
+
+func (s *codexWebsocketSession) writeMessageLocked(conn *websocket.Conn, msgType int, payload []byte) error {
 	if len(payload) <= codexWebsocketWriteChunkSize {
 		return conn.WriteMessage(msgType, payload)
 	}
@@ -789,13 +796,16 @@ func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, 
 			if eventType != "" {
 				sess.setLastEventType(conn, eventType)
 			}
-			// Record terminal IDs before delivery: downstream may still be
-			// processing this turn after its active read channel is cleared.
+			// Correlate controls before delivery, including terminal cleanup races.
 			responseID := gjson.GetBytes(payload, "response.id")
-			if isTerminalEvent(eventType) && eventType != "error" && responseID.Type == gjson.String && responseID.String() != "" {
+			if responseID.Type == gjson.String && responseID.String() != "" {
 				sess.activeMu.Lock()
 				if sess.responseStateConn == conn {
-					sess.terminalResponseIDs[responseID.String()] = struct{}{}
+					if eventType == "response.created" {
+						sess.activeResponseID = responseID.String()
+					} else if isTerminalEvent(eventType) && eventType != "error" {
+						sess.terminalResponseIDs[responseID.String()] = struct{}{}
+					}
 				}
 				sess.activeMu.Unlock()
 			}
