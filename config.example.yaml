@@ -420,6 +420,9 @@ upstream:
 
     # When true, return original model IDs in Anthropic model list responses instead of cloaked IDs.
     disable-cloaking-model-list: false
+    # Route bare claude-* IDs only when they have no route and the prefixed route is Claude-only.
+    # Applies to /v1/messages and /v1/messages/count_tokens; Home and plugin routing are unchanged.
+    # bare-model-prefix: "claude"
 
     # Anthropic-Beta is assembled per request rather than sent as a fixed list, matching
     # Claude Code: context-1m sits right after claude-code, mid-conversation-system

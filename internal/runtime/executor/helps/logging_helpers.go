@@ -129,6 +129,10 @@ func deferAPIRequest(ginCtx *gin.Context, info UpstreamRequestLog) {
 	if ginCtx == nil {
 		return
 	}
+	// After a successful downstream upgrade, HTTP error-only logging cannot consume these bodies.
+	if upgraded, exists := ginCtx.Get(logging.ResponsesWebsocketUpgradedContextKey); exists && upgraded == true {
+		return
+	}
 	var requests []logging.DeferredAPIRequest
 	if value, exists := ginCtx.Get(logging.DeferredAPIRequestContextKey); exists {
 		requests, _ = value.([]logging.DeferredAPIRequest)
