@@ -305,6 +305,19 @@ func WithAPIKey(ctx context.Context, apiKey string) context.Context {
 	return context.WithValue(ctx, apiKeyContextKey{}, apiKey)
 }
 
+// WithAuthenticationSnapshot freezes captured authentication for asynchronous
+// publication. Explicit empty values suppress legacy Gin fallback; other context
+// metadata, cancellation, and deadlines remain available without the pooled Gin.
+func WithAuthenticationSnapshot(ctx context.Context, apiKey, provider string, isNative bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithValue(ctx, "gin", nil)
+	ctx = context.WithValue(ctx, apiKeyContextKey{}, strings.TrimSpace(apiKey))
+	ctx = context.WithValue(ctx, accessProviderContextKey{}, strings.TrimSpace(provider))
+	return context.WithValue(ctx, isNativeKeyContextKey{}, isNative)
+}
+
 // APIKeyFromContext returns the client API key stored in ctx or gin.Context.
 func APIKeyFromContext(ctx context.Context) string {
 	if ctx == nil {

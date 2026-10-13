@@ -85,7 +85,14 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
 }
 
 func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
-	apiKey := APIKeyFromContext(ctx)
+	// Keep legacy source attribution separate from typed SDK authentication.
+	sourceAPIKey := APIKeyFromContext(ctx)
+	apiKey := sourceAPIKey
+	if strings.TrimSpace(apiKey) == "" {
+		if captured := usage.APIKeyFromContext(ctx); captured != "" {
+			apiKey = captured
+		}
+	}
 	accessProvider := AccessProviderFromContext(ctx)
 	isNativeKey := false
 	if nativeExplicit, ok := usage.IsNativeKeyFromContext(ctx); ok {
@@ -135,7 +142,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		isNativeKey:     isNativeKey,
 		sessionID:       sessionID,
 		parentSessionID: parentSessionID,
-		source:          resolveUsageSource(auth, apiKey),
+		source:          resolveUsageSource(auth, sourceAPIKey),
 		authType:        resolveUsageAuthType(auth),
 		reasoning:       usage.ReasoningEffortFromContext(ctx),
 		serviceTier:     usage.ServiceTierFromContext(ctx),
@@ -580,6 +587,7 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
 
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
 	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
+	ctx = usage.WithAuthenticationSnapshot(ctx, record.APIKey, record.AccessProvider, record.IsNativeKey)
 	usage.PublishRecord(ctx, record)
 }
 
