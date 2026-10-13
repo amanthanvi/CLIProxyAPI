@@ -69,6 +69,7 @@ type oaiToResponsesState struct {
 	TotalTokens      int64
 	ReasoningTokens  int64
 	UsageSeen        bool
+	ServiceTier      string
 }
 
 // responseIDCounter provides a process-wide unique counter for synthesized response identifiers.
@@ -115,8 +116,6 @@ type responsesRequestEcho struct {
 	hasReasoning          bool
 	safetyIdentifier      string
 	hasSafetyIdentifier   bool
-	serviceTier           string
-	hasServiceTier        bool
 	store                 bool
 	hasStore              bool
 	temperature           float64
@@ -182,10 +181,6 @@ func extractResponsesRequestEcho(root gjson.Result) responsesRequestEcho {
 		case "safety_identifier":
 			if !e.hasSafetyIdentifier {
 				e.safetyIdentifier, e.hasSafetyIdentifier = value.String(), true
-			}
-		case "service_tier":
-			if !e.hasServiceTier {
-				e.serviceTier, e.hasServiceTier = value.String(), true
 			}
 		case "store":
 			if !e.hasStore {
@@ -260,9 +255,6 @@ func (e responsesRequestEcho) apply(dst []byte, prefix string) []byte {
 	}
 	if e.hasSafetyIdentifier {
 		dst, _ = sjson.SetBytes(dst, prefix+"safety_identifier", e.safetyIdentifier)
-	}
-	if e.hasServiceTier {
-		dst, _ = sjson.SetBytes(dst, prefix+"service_tier", e.serviceTier)
 	}
 	if e.hasStore {
 		dst, _ = sjson.SetBytes(dst, prefix+"store", e.store)
@@ -403,6 +395,9 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, nextSeq func() int) [
 	if len(outputs) > 0 {
 		completed, _ = sjson.SetRawBytes(completed, "response.output", translatorcommon.JoinRawArray(outputs))
 	}
+	if st.ServiceTier != "" {
+		completed, _ = sjson.SetBytes(completed, "response.service_tier", st.ServiceTier)
+	}
 	if st.UsageSeen {
 		completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens", st.PromptTokens)
 		completed, _ = sjson.SetBytes(completed, "response.usage.input_tokens_details.cached_tokens", st.CachedTokens)
@@ -476,6 +471,13 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		}
 	}
 
+	if tier := root.Get("service_tier"); tier.Exists() {
+		if tier.Type == gjson.String {
+			st.ServiceTier = tier.String()
+		} else {
+			st.ServiceTier = ""
+		}
+	}
 	if usage := root.Get("usage"); usage.Exists() {
 		if v := usage.Get("prompt_tokens"); v.Exists() {
 			st.PromptTokens = v.Int()
@@ -1217,6 +1219,10 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 	}
 	if len(outputItems) > 0 {
 		resp, _ = sjson.SetRawBytes(resp, "output", translatorcommon.JoinRawArray(outputItems))
+	}
+
+	if tier := root.Get("service_tier"); tier.Type == gjson.String && tier.String() != "" {
+		resp, _ = sjson.SetBytes(resp, "service_tier", tier.String())
 	}
 
 	// usage mapping

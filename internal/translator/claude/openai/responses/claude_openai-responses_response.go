@@ -111,6 +111,7 @@ type claudeResponsesUsageTokens struct {
 	CacheCreationInputTokens int64
 	CacheReadInputTokens     int64
 	HasUsage                 bool
+	ServiceTier              string
 }
 
 var dataTag = []byte("data:")
@@ -147,6 +148,16 @@ func (u *claudeResponsesUsageTokens) Merge(usage gjson.Result) {
 		return
 	}
 	u.HasUsage = true
+	if speed := usage.Get("speed"); speed.Exists() {
+		switch speed.String() {
+		case "fast":
+			u.ServiceTier = "priority"
+		case "standard":
+			u.ServiceTier = "default"
+		default:
+			u.ServiceTier = ""
+		}
+	}
 	if inputTokens := usage.Get("input_tokens"); inputTokens.Exists() {
 		u.InputTokens = inputTokens.Int()
 	}
@@ -250,8 +261,6 @@ type responsesRequestEcho struct {
 	hasReasoning          bool
 	safetyIdentifier      string
 	hasSafetyIdentifier   bool
-	serviceTier           string
-	hasServiceTier        bool
 	store                 bool
 	hasStore              bool
 	temperature           float64
@@ -313,10 +322,6 @@ func extractResponsesRequestEcho(root gjson.Result) responsesRequestEcho {
 		case "safety_identifier":
 			if !e.hasSafetyIdentifier {
 				e.safetyIdentifier, e.hasSafetyIdentifier = value.String(), true
-			}
-		case "service_tier":
-			if !e.hasServiceTier {
-				e.serviceTier, e.hasServiceTier = value.String(), true
 			}
 		case "store":
 			if !e.hasStore {
@@ -391,9 +396,6 @@ func (e responsesRequestEcho) apply(dst []byte, prefix string) []byte {
 	}
 	if e.hasSafetyIdentifier {
 		dst, _ = sjson.SetBytes(dst, prefix+"safety_identifier", e.safetyIdentifier)
-	}
-	if e.hasServiceTier {
-		dst, _ = sjson.SetBytes(dst, prefix+"service_tier", e.serviceTier)
 	}
 	if e.hasStore {
 		dst, _ = sjson.SetBytes(dst, prefix+"store", e.store)
@@ -1369,6 +1371,9 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			reasoningLength += len(reasoning.Text)
 		}
 		reasoningTokens := int64(reasoningLength / 4)
+		if st.Usage.ServiceTier != "" {
+			completed, _ = sjson.SetBytes(completed, "response.service_tier", st.Usage.ServiceTier)
+		}
 		usagePresent := st.Usage.HasUsage || reasoningTokens > 0
 		if usagePresent {
 			inputTokens, outputTokens, totalTokens, cachedTokens := st.Usage.OpenAIResponsesUsage()
@@ -1750,6 +1755,9 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(ctx context.Context, _ stri
 
 	// Usage
 	inputTokens, outputTokens, totalTokens, cachedTokens := usageTokens.OpenAIResponsesUsage()
+	if usageTokens.ServiceTier != "" {
+		out, _ = sjson.SetBytes(out, "service_tier", usageTokens.ServiceTier)
+	}
 	if inputTokens != 0 {
 		out, _ = sjson.SetBytes(out, "usage.input_tokens", inputTokens)
 	}
