@@ -2667,15 +2667,11 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			return nil
 		})
 
-		// Start server reader loop so server processes control frames.
-		readErrCh := make(chan error, 1)
+		// ReadMessage processes the Pong before returning the request payload.
+		payloadRead := make(chan codexWebsocketRead, 1)
 		go func() {
-			for {
-				if _, _, errRead := conn.ReadMessage(); errRead != nil {
-					readErrCh <- errRead
-					return
-				}
-			}
+			_, payload, errRead := conn.ReadMessage()
+			payloadRead <- codexWebsocketRead{payload: payload, err: errRead}
 		}()
 
 		// Wait until client has entered writeMessage and is actively holding writeMu.
@@ -2701,7 +2697,17 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			return
 		}
 
-		// Now send terminal response.
+		select {
+		case event := <-payloadRead:
+			if event.err != nil || gjson.GetBytes(event.payload, "type").String() != "response.create" {
+				t.Errorf("request payload after Pong: %v", event.err)
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("request payload was not received after Pong")
+			return
+		}
+		// Reply only after the held request write has completed.
 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
@@ -2766,12 +2772,10 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return nil
 		})
 
+		payloadRead := make(chan codexWebsocketRead, 1)
 		go func() {
-			for {
-				if _, _, errRead := conn.ReadMessage(); errRead != nil {
-					return
-				}
-			}
+			_, payload, errRead := conn.ReadMessage()
+			payloadRead <- codexWebsocketRead{payload: payload, err: errRead}
 		}()
 
 		// Wait until client has entered writeMessage on sessionless path.
@@ -2797,6 +2801,16 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return
 		}
 
+		select {
+		case event := <-payloadRead:
+			if event.err != nil || gjson.GetBytes(event.payload, "type").String() != "response.create" {
+				t.Errorf("request payload after Pong: %v", event.err)
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("request payload was not received after Pong")
+			return
+		}
 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
@@ -2858,12 +2872,10 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_NonstreamSessionless(t *testi
 			return nil
 		})
 
+		payloadRead := make(chan codexWebsocketRead, 1)
 		go func() {
-			for {
-				if _, _, errRead := conn.ReadMessage(); errRead != nil {
-					return
-				}
-			}
+			_, payload, errRead := conn.ReadMessage()
+			payloadRead <- codexWebsocketRead{payload: payload, err: errRead}
 		}()
 
 		// Wait until client has entered writeMessage on nonstream path.
@@ -2889,6 +2901,16 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_NonstreamSessionless(t *testi
 			return
 		}
 
+		select {
+		case event := <-payloadRead:
+			if event.err != nil || gjson.GetBytes(event.payload, "type").String() != "response.create" {
+				t.Errorf("request payload after Pong: %v", event.err)
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("request payload was not received after Pong")
+			return
+		}
 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
