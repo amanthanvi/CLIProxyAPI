@@ -515,6 +515,11 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
 		return
 	}
 	if msg != nil && msg.Error != nil {
+		if status == http.StatusTooManyRequests {
+			for key, values := range coreauth.SafeClaudeRateLimitResponseHeaders(msg.Error, time.Now()) {
+				c.Writer.Header()[key] = values
+			}
+		}
 		for _, value := range coreauth.SafeResponseHeaders(msg.Error).Values("Retry-After") {
 			c.Writer.Header().Add("Retry-After", value)
 		}
