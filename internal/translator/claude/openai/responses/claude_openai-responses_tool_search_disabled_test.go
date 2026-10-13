@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -66,7 +67,7 @@ func loadToolSearchGolden(t *testing.T) (toolSearchGoldenFixtures, map[string]to
 		if errRead != nil {
 			t.Fatalf("read %s: %v", name, errRead)
 		}
-		if errUnmarshal := json.Unmarshal(raw, target); errUnmarshal != nil {
+		if errUnmarshal := decodeToolSearchGoldenJSON(raw, target); errUnmarshal != nil {
 			t.Fatalf("decode %s: %v", name, errUnmarshal)
 		}
 	}
@@ -74,6 +75,43 @@ func loadToolSearchGolden(t *testing.T) (toolSearchGoldenFixtures, map[string]to
 		t.Fatalf("golden has %d entries for %d cases", len(golden), len(fixtures.Cases))
 	}
 	return fixtures, golden
+}
+
+func decodeToolSearchGoldenJSON(raw []byte, target any) error {
+	// RawMessage schemas preserve physical fixture whitespace; pin checkout EOLs.
+	return json.Unmarshal(bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n")), target)
+}
+
+func TestToolSearchGoldenCheckoutLineEndings(t *testing.T) {
+	setClientToolSearchEnabledForTest(t, false)
+	_, golden := loadToolSearchGolden(t)
+	raw, errRead := os.ReadFile(filepath.Join("testdata", "tool_search_disabled", "cases.json"))
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	lf := bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n"))
+	for name, input := range map[string][]byte{"LF": lf, "CRLF": bytes.ReplaceAll(lf, []byte("\n"), []byte("\r\n"))} {
+		t.Run(name, func(t *testing.T) {
+			var fixtures toolSearchGoldenFixtures
+			if err := decodeToolSearchGoldenJSON(input, &fixtures); err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range fixtures.Cases {
+				got := renderToolSearchGolden(fixtures, c)
+				want := golden[c.Name]
+				if got.Request != want.Request || got.RequestError != want.RequestError || strings.Join(got.Stream, "\n") != strings.Join(want.Stream, "\n") || got.NonStream != want.NonStream {
+					t.Fatalf("%s checkout differs from exact dev golden for %s", name, c.Name)
+				}
+			}
+		})
+	}
+	var value struct{ Text string }
+	if err := decodeToolSearchGoldenJSON([]byte("{\r\n\"Text\":\"line1\\r\\nline2\"\r\n}"), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Text != "line1\r\nline2" {
+		t.Fatal("fixture normalization changed a string value's line endings")
+	}
 }
 
 func TestToolSearchDisabledMatchesDevGolden(t *testing.T) {
