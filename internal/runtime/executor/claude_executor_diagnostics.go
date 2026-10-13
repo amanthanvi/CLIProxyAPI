@@ -73,10 +73,10 @@ func claudeDiagnosticsCredentialIdentity(auth *cliproxyauth.Auth) string {
 		return ""
 	}
 	if id := strings.TrimSpace(auth.ID); id != "" {
-		return "id:" + id
+		return "id:" + id + ":account:" + cliproxyauth.AffinityAccountIdentity(auth)
 	}
 	if index := strings.TrimSpace(auth.Index); index != "" {
-		return "index:" + index
+		return "index:" + index + ":account:" + cliproxyauth.AffinityAccountIdentity(auth)
 	}
 	deviceIDs := claudeauth.NormalizeDeviceIDPool(claudeauth.ReadDeviceIDPool(&auth.Metadata))
 	if len(deviceIDs) > 0 {

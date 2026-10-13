@@ -97,13 +97,22 @@ type Service struct {
 	coreManager *coreauth.Manager
 
 	// cooldownStateStore persists runtime cooldown state when enabled.
-	cooldownStateStore coreauth.CooldownStateStore
+	cooldownStateStore   coreauth.CooldownStateStore
+	affinityMu           sync.Mutex
+	affinityStore        *coreauth.FileAffinityStore
+	affinityPath         string
+	affinityStop         chan struct{}
+	affinityDone         chan struct{}
+	affinityStopping     bool
+	affinityDrainEnabled bool
+	affinityInitialized  bool
 
 	// pluginHost owns dynamic plugin lifecycle and runtime capability adapters.
 	pluginHost *pluginhost.Host
 
 	// shutdownOnce ensures shutdown is called only once.
 	shutdownOnce sync.Once
+	shutdownErr  error
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
