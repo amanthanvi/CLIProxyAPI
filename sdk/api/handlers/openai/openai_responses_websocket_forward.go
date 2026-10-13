@@ -77,6 +77,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 	}
 	localFrames := opts.localInterrupt.framesChan()
 
+streamLoop:
 	for {
 		select {
 		case interruptPayload := <-localFrames:
@@ -92,6 +93,9 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		case errMsg, ok := <-errs:
 			if !ok {
 				errs = nil
+				if data == nil {
+					break streamLoop
+				}
 				continue
 			}
 			if errMsg == nil {
@@ -127,32 +131,13 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, errTerminate
 		case chunk, ok := <-data:
 			if !ok {
-				if opts.duplexStream != nil && opts.duplexStream() {
-					// A duplex stream ends with its socket, not an individual response.
-					// The data channel may close before select observes its final error.
-					_, errClose := writer.closeWithoutError()
-					cancel(nil)
-					if errClose != nil {
-						return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, errClose
-					}
-					return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, websocket.ErrCloseSent
+				// The broker publishes terminal errors before closing both channels.
+				// Drain errors through the existing branch before the EOF fallback.
+				data = nil
+				if errs == nil {
+					break streamLoop
 				}
-				if !completed {
-					errMsg := &interfaces.ErrorMessage{
-						StatusCode: http.StatusRequestTimeout,
-						Error:      fmt.Errorf("stream closed before response.completed"),
-					}
-					h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
-					markAPIResponseTimestamp(c)
-					_, errClose := writer.closeWithoutError()
-					cancel(errMsg.Error)
-					if errClose != nil {
-						return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, errClose
-					}
-					return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, websocket.ErrCloseSent
-				}
-				cancel(nil)
-				return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, nil
+				continue
 			}
 			if keepAliveTicker != nil && keepAliveInterval > 0 {
 				keepAliveTicker.Reset(keepAliveInterval)
@@ -244,6 +229,31 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			}
 		}
 	}
+	if opts.duplexStream != nil && opts.duplexStream() {
+		// A duplex stream ends with its socket, not an individual response.
+		_, errClose := writer.closeWithoutError()
+		cancel(nil)
+		if errClose != nil {
+			return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, errClose
+		}
+		return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, websocket.ErrCloseSent
+	}
+	if !completed {
+		errMsg := &interfaces.ErrorMessage{
+			StatusCode: http.StatusRequestTimeout,
+			Error:      fmt.Errorf("stream closed before response.completed"),
+		}
+		h.LoggingAPIResponseError(context.WithValue(context.Background(), "gin", c), errMsg)
+		markAPIResponseTimestamp(c)
+		_, errClose := writer.closeWithoutError()
+		cancel(errMsg.Error)
+		if errClose != nil {
+			return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, errClose
+		}
+		return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, websocket.ErrCloseSent
+	}
+	cancel(nil)
+	return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), nil, nil
 }
 
 func completeResponsesWebsocketLocalInterrupt(
