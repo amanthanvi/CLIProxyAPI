@@ -29,10 +29,15 @@ import (
 // runs on an upstream websocket, no frame may claim the local path at all,
 // not even in the window after that socket was lost. "No live websocket
 // channel right now" must never be read as "this turn is HTTP".
+//
+// Managed overlay: responseID correlates claims with the response the client
+// has observed as running; a frame for any other or unknown response is
+// never claimed locally.
 type responsesLocalInterrupt struct {
 	mu           sync.Mutex
 	active       bool
 	wsTurnActive bool
+	responseID   string
 	frames       chan []byte
 }
 
@@ -50,6 +55,7 @@ func (s *responsesLocalInterrupt) begin(websocketOwned bool) {
 	s.mu.Lock()
 	s.active = true
 	s.wsTurnActive = websocketOwned
+	s.responseID = ""
 	s.mu.Unlock()
 }
 
@@ -61,6 +67,7 @@ func (s *responsesLocalInterrupt) reactivate() {
 	}
 	s.mu.Lock()
 	s.active = true
+	s.responseID = ""
 	s.mu.Unlock()
 }
 
@@ -115,14 +122,36 @@ func (s *responsesLocalInterrupt) deliver(payload []byte) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.active || s.wsTurnActive {
+	if !s.active || s.wsTurnActive || s.responseID == "" || gjson.GetBytes(payload, "response_id").String() != s.responseID {
 		return false
 	}
 	select {
 	case s.frames <- bytes.Clone(payload):
+		s.responseID = ""
 		return true
 	default:
 		return false
+	}
+}
+
+// observe correlates claims with the response the forward loop is about to
+// deliver downstream, before the client can react to that event.
+func (s *responsesLocalInterrupt) observe(payload []byte) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active {
+		return
+	}
+	switch gjson.GetBytes(payload, "type").String() {
+	case "response.created":
+		s.responseID = gjson.GetBytes(payload, "response.id").String()
+	case "response.completed", "response.done", "response.incomplete", "response.failed":
+		if gjson.GetBytes(payload, "response.id").String() == s.responseID {
+			s.responseID = ""
+		}
 	}
 }
 

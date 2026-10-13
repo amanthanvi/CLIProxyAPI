@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -221,6 +222,13 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 	// Account checks may call back into the auth manager; do not hold session
 	// locks across them. Take the lifecycle snapshot only after they finish.
 	authEnabled := cliproxyexecutor.WebsocketAuthEnabled(ctx, authID)
+	// A control can wait behind a payload write while the response completes.
+	// Decide only after writer ownership, before committing control bytes.
+	sess.writeMu.Lock()
+	defer sess.writeMu.Unlock()
+	if testWebsocketWritePayloadHook != nil {
+		testWebsocketWritePayloadHook(conn)
+	}
 	sess.connMu.Lock()
 	if sess.conn != conn {
 		sess.connMu.Unlock()
@@ -232,12 +240,12 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 	alreadyTerminal = alreadyTerminal && sess.responseStateConn == conn
 	// activeResponseID/Terminal track the running response at read-loop
 	// granularity: only its own id forwards while it runs, and its terminal
-	// event closes the window before teardown clears the channel. Before
-	// response.created the id is unknown, so the live channel alone
-	// authorizes forwarding and upstream validates the frame.
+	// event closes the window before teardown clears the channel. Managed
+	// overlay: before response.created the id is unknown, so no control can
+	// be correlated with this turn and none is forwarded to upstream.
 	liveChannel := sess.activeConn == conn && sess.activeCh != nil
 	active := liveChannel && !sess.activeResponseTerminal &&
-		(sess.activeResponseID == "" || sess.activeResponseID == targetID)
+		sess.activeResponseID != "" && sess.activeResponseID == targetID
 	var disconnectErr error
 	if sess.terminalConn == conn {
 		disconnectErr = sess.terminalErr
@@ -267,7 +275,7 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
 	if !authEnabled {
 		return fmt.Errorf("websocket credential is no longer enabled")
 	}
-	if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
+	if errWrite := sess.writeMessageLocked(conn, websocket.TextMessage, payload); errWrite != nil {
 		return errWrite
 	}
 	log.WithField("outcome", "forwarded").Debug("codex websockets: response.interrupt handled")
