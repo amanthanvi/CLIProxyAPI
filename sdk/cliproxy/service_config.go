@@ -238,6 +238,7 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 		return false
 	}
 	s.coreManager.SetOAuthModelAlias(commit.cfg.OAuthModelAlias)
+	s.configureAffinityStateStore(commit.cfg, false)
 	return true
 }
 

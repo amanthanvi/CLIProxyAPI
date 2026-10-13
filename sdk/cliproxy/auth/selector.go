@@ -910,6 +910,8 @@ func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextReco
 // It extracts session ID from multiple sources and maintains session-to-auth
 // mappings with automatic failover when the bound auth becomes unavailable.
 type SessionAffinitySelector struct {
+	stateMu           sync.RWMutex
+	authIdentities    map[string]string
 	fallback          Selector
 	cache             *SessionCache
 	matcher           *cliproxysession.MerklePrefixMatcher
@@ -1098,6 +1100,11 @@ func (s *SessionAffinitySelector) Trees() *cliproxysession.InMemorySessionTreeSt
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
 // that may be supported by different auth credentials, and to avoid cross-provider conflicts.
 func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
+	s.stateMu.Lock()
+	s.validateAccountHints(auths)
+	s.stateMu.Unlock()
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
 	entry := selectorLogEntry(ctx)
 	if opts.Metadata == nil {
 		opts.Metadata = make(map[string]any)
@@ -1498,6 +1505,8 @@ func (s *SessionAffinitySelector) Stop() {
 	if s == nil {
 		return
 	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	if s.cache != nil {
 		s.cache.Stop()
 	}
@@ -1512,6 +1521,9 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 	if s == nil {
 		return
 	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	delete(s.authIdentities, authID)
 	if s.cache != nil {
 		s.cache.InvalidateAuth(authID)
 	}
@@ -1527,6 +1539,8 @@ func (s *SessionAffinitySelector) LookupAffinity(provider, model, sessionID stri
 	if s == nil || s.cache == nil {
 		return "", "unsupported"
 	}
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
 	provider = strings.TrimSpace(provider)
 	model = strings.TrimSpace(model)
 	sessionID = strings.TrimSpace(sessionID)
@@ -1625,6 +1639,8 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 	if s == nil || res.AuthID == "" {
 		return
 	}
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
 
 	explicitID, explicitFallbackID := extractExplicitSessionIDs(res.Options.Headers, res.Options.OriginalRequest, res.Options.Metadata)
 	if explicitID != "" {

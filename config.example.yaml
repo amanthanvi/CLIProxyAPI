@@ -162,6 +162,13 @@ routing:
   session-affinity: false # default: false
   # How long session-to-auth bindings are retained. Default: 1h
   session-affinity-ttl: "1h"
+  # Optional Linux restart checkpoint. Empty disables persistence. Use an absolute path
+  # outside auth-dir in a pre-created, service-owned 0700 directory; the file is 0600.
+  # Example: /var/lib/cliproxyapi/session-affinity.json. Treat routing IDs as sensitive.
+  # Each path must be exclusively owned by one service process; shared writers are unsupported.
+  # Checkpoints occur every 30s and after a successful graceful drain on planned shutdown.
+  # Crashes can lose the last 30s of bindings; provider cache retention is independent.
+  session-affinity-state-path: ""
   # When true (default), subagents (child sessions with parent references) inherit and bind
   # to the parent's upstream credential across all providers (Claude, Codex, Antigravity, Gemini),
   # maximizing Prompt/KV Cache reuse and minimizing TTFT.

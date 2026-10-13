@@ -30,7 +30,7 @@ import (
 //
 // Returns:
 //   - error: An error if the service fails to start or run
-func (s *Service) Run(ctx context.Context) error {
+func (s *Service) Run(ctx context.Context) (errRun error) {
 	if s == nil {
 		return fmt.Errorf("cliproxy: service is nil")
 	}
@@ -67,6 +67,7 @@ func (s *Service) Run(ctx context.Context) error {
 		defer shutdownCancel()
 		if errShutdown := s.Shutdown(shutdownCtx); errShutdown != nil {
 			log.Errorf("service shutdown returned error: %v", errShutdown)
+			errRun = errors.Join(errRun, errShutdown)
 		}
 	}()
 
@@ -118,6 +119,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	// legacy clients removed; no caches to refresh
+	s.configureAffinityStateStore(s.cfg, true)
 
 	s.ensureWebsocketGateway()
 	if homeEnabled {
@@ -225,7 +227,8 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 }
 
-// Shutdown stops background workers and immediately closes the HTTP server.
+// Shutdown drains checkpoint-enabled services before persisting final affinity.
+// Without checkpointing it retains the legacy immediate HTTP shutdown behavior.
 // It ensures all resources are properly cleaned up and connections are closed.
 // The shutdown is idempotent and can be called multiple times safely.
 //
@@ -238,10 +241,29 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
-	var shutdownErr error
 	s.shutdownOnce.Do(func() {
+		var shutdownErr error
+		defer func() { s.shutdownErr = shutdownErr }()
 		if ctx == nil {
 			ctx = context.Background()
+		}
+		if s.stopAffinityCheckpoints() {
+			if s.server != nil {
+				s.server.BeginDrain()
+			}
+			s.coreManager.BeginAffinityDrain()
+			shutdownErr = s.coreManager.WaitAffinityIdle(ctx)
+			if shutdownErr == nil && s.server != nil {
+				shutdownErr = s.server.Drain(ctx)
+			}
+			if shutdownErr == nil {
+				shutdownErr = s.coreManager.WaitAffinityIdle(ctx)
+			}
+			if shutdownErr == nil {
+				shutdownErr = s.checkpointAffinity()
+			} else {
+				log.Warn("affinity drain did not complete; final checkpoint skipped")
+			}
 		}
 
 		s.homeMu.Lock()
@@ -369,7 +391,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 
 		usage.StopDefault()
 	})
-	return shutdownErr
+	return s.shutdownErr
 }
 
 func (s *Service) ensureAuthDir() error {

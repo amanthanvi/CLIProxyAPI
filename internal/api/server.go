@@ -42,7 +42,8 @@ type Server struct {
 	engine *gin.Engine
 
 	// server is the underlying HTTP server.
-	server *http.Server
+	server    *http.Server
+	admission requestAdmission
 
 	// muxBaseListener is the shared TCP listener used to serve both HTTP and Redis protocol traffic.
 	listenerMu      sync.Mutex
@@ -259,8 +260,12 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 
 	// Create HTTP server
 	s.server = &http.Server{
-		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Handler: engine,
+		Addr:      fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
+		Handler:   s.trackAdmission(engine),
+		ConnState: s.trackConnectionState,
+		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+			return context.WithValue(ctx, drainConnectionKey{}, conn)
+		},
 	}
 
 	return s

@@ -431,6 +431,18 @@ func (m *Manager) SetSelector(selector Selector) {
 		m.mu.Unlock()
 		return
 	}
+	m.mu.Unlock()
+	// Reconfigure the existing native selector so in-flight results keep updating
+	// the same state. No copied checkpoint can race a newer live binding.
+	if oldAffinity, ok := oldSelector.(*SessionAffinitySelector); ok {
+		if newAffinity, compatible := selector.(*SessionAffinitySelector); compatible {
+			oldAffinity.reconfigure(newAffinity)
+			newAffinity.Stop()
+			selector = oldAffinity
+			oldSelector = nil
+		}
+	}
+	m.mu.Lock()
 	m.selector = selector
 	m.mu.Unlock()
 
@@ -677,10 +689,10 @@ func selectorContextForAvailableAuths(ctx context.Context, selector Selector, ro
 
 func (m *Manager) transientlyUnavailableSessionAffinityAuthIDs(selector Selector, affinityCandidates []*Auth, routeModel string, now time.Time) map[string]struct{} {
 	affinity, ok := selector.(*SessionAffinitySelector)
-	if !ok || affinity == nil || !affinity.rebindOnQuotaOnly || len(affinityCandidates) == 0 {
+	if !ok || !affinity.quotaRebindEnabled() || len(affinityCandidates) == 0 {
 		return nil
 	}
-	if _, weighted := affinity.fallback.(*WeightedRoundRobinSelector); weighted {
+	if affinity.weightedFallback() {
 		affinityCandidates = positiveWeightAuths(affinityCandidates)
 	}
 	var authIDs map[string]struct{}
@@ -1779,7 +1791,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	registryRef := registry.GetGlobalRegistry()
 	targetKey := canonicalSchedulingProvider(provider)
 	affinitySelector, hasAffinity := selector.(*SessionAffinitySelector)
-	trackTransientAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnQuotaOnly
+	trackTransientAffinity := hasAffinity && affinitySelector.quotaRebindEnabled()
 	var affinityCandidates []*Auth
 	if trackTransientAffinity {
 		affinityCandidates = make([]*Auth, 0, len(m.auths))
@@ -1854,6 +1866,11 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 // SelectAuth selects one credential through the configured scheduling strategy.
 // It does not execute or alter the selected credential's result state.
 func (m *Manager) SelectAuth(ctx context.Context, provider, model string, opts cliproxyexecutor.Options) (*Auth, error) {
+	done, errDrain := m.beginAffinityExecution(false)
+	if errDrain != nil {
+		return nil, errDrain
+	}
+	defer done()
 	if m != nil && m.HomeEnabled() {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -1870,6 +1887,11 @@ func (m *Manager) SelectAuth(ctx context.Context, provider, model string, opts c
 // SelectAuthByKind selects one credential of the required kind through the
 // configured scheduling strategy. Credentials of other kinds are skipped.
 func (m *Manager) SelectAuthByKind(ctx context.Context, provider, model, requiredKind string, opts cliproxyexecutor.Options) (*Auth, error) {
+	done, errDrain := m.beginAffinityExecution(false)
+	if errDrain != nil {
+		return nil, errDrain
+	}
+	defer done()
 	if m != nil && m.HomeEnabled() {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -1894,6 +1916,11 @@ func (m *Manager) SelectAuthByKind(ctx context.Context, provider, model, require
 
 // SelectAuthWithCredentialPolicy selects one local credential allowed by a fixed policy.
 func (m *Manager) SelectAuthWithCredentialPolicy(ctx context.Context, provider, model, policy string, opts cliproxyexecutor.Options) (*Auth, error) {
+	done, errDrain := m.beginAffinityExecution(false)
+	if errDrain != nil {
+		return nil, errDrain
+	}
+	defer done()
 	if m != nil && m.HomeEnabled() {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -2115,7 +2142,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	registryRef := registry.GetGlobalRegistry()
 	affinitySelector, hasAffinity := selector.(*SessionAffinitySelector)
-	trackTransientAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnQuotaOnly
+	trackTransientAffinity := hasAffinity && affinitySelector.quotaRebindEnabled()
 	var affinityCandidates []*Auth
 	if trackTransientAffinity {
 		affinityCandidates = make([]*Auth, 0, len(m.auths))

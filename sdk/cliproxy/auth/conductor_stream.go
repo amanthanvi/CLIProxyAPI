@@ -145,7 +145,9 @@ func (m *Manager) recordCanceledUpstreamCooldown(ctx context.Context, auth *Auth
 func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel, routeModel string, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, opts cliproxyexecutor.Options) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamStart := time.Now()
+	done, _ := m.beginAffinityExecution(true)
 	go func() {
+		defer done()
 		defer close(out)
 		var failed bool
 		forward := true

@@ -387,6 +387,10 @@ type RoutingConfig struct {
 	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
 	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
 
+	// SessionAffinityStatePath enables optional Linux checkpointing in an existing private
+	// state directory outside AuthDir. Empty disables persistence.
+	SessionAffinityStatePath string `yaml:"session-affinity-state-path,omitempty" json:"session-affinity-state-path,omitempty"`
+
 	// SessionAffinitySubagents controls whether subagents (child sessions with parent references)
 	// inherit and bind to the parent's upstream credential across all providers (Claude, Codex,
 	// Antigravity, Gemini), maximizing prompt and KV cache reuse.
