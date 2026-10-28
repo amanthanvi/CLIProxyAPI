@@ -181,7 +181,7 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 				return resp, nil
 			}
 		}
-		return cliproxyexecutor.Response{}, lastErr
+		return cliproxyexecutor.Response{}, m.certifyPoolQuotaExhaustion(ctx, normalized, retryModel, opts, lastErr)
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
@@ -333,6 +333,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			}
 		}
 		var bootstrapErr *streamBootstrapError
+		lastErr = m.certifyPoolQuotaExhaustion(ctx, normalized, retryModel, opts, lastErr)
 		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
 			return streamErrorResult(bootstrapErr.Headers(), lastErr), nil
 		}
