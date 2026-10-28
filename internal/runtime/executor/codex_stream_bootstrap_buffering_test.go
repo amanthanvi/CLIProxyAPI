@@ -1748,9 +1748,8 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeo
 }
 
 // The downstream handler closes the client connection as soon as the executor publishes an
-// upstream disconnect, which cancels the request context. A usage-limit error must reach the
-// conductor before that happens, otherwise the cancellation drops the error and the credential
-// cooldown it carries (issue 6503).
+// upstream disconnect, which cancels the request context. After output has started, a usage-limit
+// error must reach the conductor first, otherwise cancellation drops the error and its cooldown.
 func TestCodexWebsocketsExecutor_UnbufferedUpstreamErrorIsDeliveredBeforeDisconnectNotify(t *testing.T) {
 	frames := map[string]string{
 		"error frame":     `{"type":"error","status":429,"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":600}}`,
@@ -1758,7 +1757,7 @@ func TestCodexWebsocketsExecutor_UnbufferedUpstreamErrorIsDeliveredBeforeDisconn
 	}
 	for name, frame := range frames {
 		t.Run(name, func(t *testing.T) {
-			server := codexWebsocketServerHoldingConnection(t, frame)
+			server := codexWebsocketServerHoldingConnection(t, codexCreatedEvent, codexOutputDeltaEvent, frame)
 			defer server.Close()
 
 			exec := NewCodexWebsocketsExecutor(codexBufferingConfig(false))
