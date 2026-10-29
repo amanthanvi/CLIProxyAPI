@@ -276,6 +276,23 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					continue
 				}
 				switch gjson.GetBytes(payload, "type").String() {
+				case "response.interrupt":
+					// Native Codex interrupts an active response, drains its terminal
+					// event, then creates a continuation on this same socket. Unlike
+					// response.steer, interrupt does not create an automatic successor.
+					if !cliproxyexecutor.WebsocketAuthEnabled(streamCtx, auth.ID) {
+						fail(fmt.Errorf("websocket credential is no longer enabled"))
+						return
+					}
+					helps.RecordAPIWebsocketRequest(streamCtx, e.cfg, helps.UpstreamRequestLog{
+						URL: initial.wsURL, Method: "WEBSOCKET", Body: payload, Provider: e.Identifier(), AuthID: auth.ID,
+					})
+					if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
+						fail(mapCodexWebsocketWriteError(sess, conn, errWrite))
+						return
+					}
+					continue
+
 				case "response.steer":
 					parent := gjson.GetBytes(payload, "previous_response_id").String()
 					metadataMu.Lock()
