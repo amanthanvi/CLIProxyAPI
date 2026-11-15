@@ -30,7 +30,7 @@ func TestResponsesWebsocketQuotaExhaustionRecovery(t *testing.T) {
 	t.Cleanup(func() { log.SetLevel(oldLevel) })
 	for _, frameKind := range []string{"error", "response.failed"} {
 		for _, buffering := range []bool{false, true} {
-			for _, scenario := range []string{"early-failover", "exhaust-refill"} {
+			for _, scenario := range []string{"early-failover", "pinned-no-alternative", "exhaust-refill"} {
 				t.Run(fmt.Sprintf("%s/buffer=%t/%s", frameKind, buffering, scenario), func(t *testing.T) {
 					var exhaustedA, exhaustedB atomic.Bool
 					var createsA, createsB atomic.Int32
@@ -146,19 +146,44 @@ func TestResponsesWebsocketQuotaExhaustionRecovery(t *testing.T) {
 					first := dial()
 					request(first)
 					responseID, err := read(first)
-					if scenario == "early-failover" {
+					if scenario != "exhaust-refill" {
 						if err != nil {
 							t.Fatalf("early429 closed downstream before healthy B completion: %v; createsA=%d createsB=%d", err, createsA.Load(), createsB.Load())
 						}
 						if responseID != "success-b" || createsA.Load() != 1 || createsB.Load() != 1 {
 							t.Fatalf("wrong failover result: id=%q A=%d B=%d", responseID, createsA.Load(), createsB.Load())
 						}
-						// A continuation is account-bound and must ask for full replay, not
-						// retry previous_response_id on a different account when B exhausts.
+						if scenario == "early-failover" {
+							// Make replay useful without permitting this pinned continuation
+							// to rotate accounts before the client sends a fresh full request.
+							exhaustedA.Store(false)
+							if _, _, err := manager.ResetQuota(coreauth.WithSkipPersist(context.Background()), ids[0]); err != nil {
+								t.Fatal("synthetic alternate reset failed")
+							}
+						}
 						exhaustedB.Store(true)
 						continuation := fmt.Sprintf(`{"type":"response.create","model":%q,"previous_response_id":"success-b","input":[{"type":"message","role":"user","content":"synthetic continuation"}]}`, model)
 						if first.WriteMessage(websocket.TextMessage, []byte(continuation)) != nil {
 							t.Fatal("continuation write failed")
+						}
+						if scenario == "pinned-no-alternative" {
+							_ = first.SetReadDeadline(time.Now().Add(3 * time.Second))
+							_, payload, errQuota := first.ReadMessage()
+							if errQuota != nil {
+								t.Fatalf("exhausted continuation closed without terminal quota payload: %v", errQuota)
+							}
+							quota := ojson.ParseBytes(payload)
+							if quota.Get("type").String() != "error" || quota.Get("status").Int() != http.StatusTooManyRequests || quota.Get("error.type").String() != "usage_limit_reached" {
+								t.Fatalf("exhausted continuation did not report terminal native 429 quota: %s", payload)
+							}
+							_, _, errClose := first.ReadMessage()
+							if !websocket.IsCloseError(errClose, websocket.CloseAbnormalClosure) {
+								t.Fatalf("terminal quota payload was not followed by socket teardown: %v", errClose)
+							}
+							if createsA.Load() != 1 || createsB.Load() != 2 {
+								t.Fatalf("exhausted continuation rotated account: A=%d B=%d", createsA.Load(), createsB.Load())
+							}
+							return
 						}
 						_, closeError := read(first)
 						var typedClose *websocket.CloseError

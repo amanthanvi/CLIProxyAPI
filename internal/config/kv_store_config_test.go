@@ -136,6 +136,8 @@ func TestKVStoreConfig_ExplicitOptInAndRoundTrips(t *testing.T) {
 	}{
 		{name: "omitted", raw: "config-version: 8\nserver:\n  port: 8317\n"},
 		{name: "null", raw: "config-version: 8\nserver:\n  kv-store: null\n"},
+		{name: "legacy null", raw: "kv-store: null\n"},
+		{name: "canonical null overrides legacy opt-in", raw: "config-version: 8\nserver:\n  kv-store: null\nkv-store:\n  disabled: false\n  path: ./legacy-opt-in.db\n"},
 		{name: "empty section", raw: "config-version: 8\nserver:\n  kv-store: {}\n"},
 		{name: "blank path", raw: "config-version: 8\nserver:\n  kv-store:\n    path: '  '\n"},
 		{name: "explicit false", raw: "config-version: 8\nserver:\n  kv-store:\n    disabled: false\n", enabled: true},
@@ -212,5 +214,20 @@ func TestKVStoreConfigJSONOptIn(t *testing.T) {
 				t.Fatalf("Enabled() = %t, want %t", got, tc.enabled)
 			}
 		})
+	}
+}
+
+func TestKVStoreConfigRejectsMalformedAncestors(t *testing.T) {
+	for _, raw := range []string{
+		"config-version: 8\nserver: null\n",
+		"config-version: 8\nserver: false\n",
+		"config-version: 8\nserver: []\n",
+		"config-version: 8\nserver:\n  kv-store: false\n",
+		"config-version: 8\nserver:\n  kv-store: invalid\n",
+		"config-version: 8\nserver:\n  kv-store: []\n",
+	} {
+		if _, err := ParseConfigBytes([]byte(raw)); err == nil {
+			t.Fatalf("malformed KV ancestor accepted: %q", raw)
+		}
 	}
 }

@@ -310,6 +310,11 @@ func flattenV8(node *yaml.Node) (*yaml.Node, error) {
 		return nil, err
 	}
 	node = expandConfigAliases(node)
+	// Canonical null disables KV, including over a legacy persistence opt-in.
+	if kv := yamlPath(node, "server.kv-store"); kv != nil && kv.Tag == "!!null" {
+		kv.Kind, kv.Tag, kv.Value = yaml.MappingNode, "!!map", ""
+		setYAMLPath(kv, "disabled", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
+	}
 	if _, err := normalizeV8PrivateIPAlias(node, true); err != nil {
 		return nil, err
 	}
