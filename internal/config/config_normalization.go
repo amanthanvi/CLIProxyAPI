@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strconv"
@@ -63,6 +64,10 @@ func (cfg *Config) SanitizeCodexHeaderDefaults() {
 // entrypoint and beta override lists, and resets an unknown client-request-id
 // mode to the default.
 func (cfg *Config) SanitizeClaudeHeaderDefaults() {
+	cfg.sanitizeClaudeHeaderDefaults(nil)
+}
+
+func (cfg *Config) sanitizeClaudeHeaderDefaults(warnings *[]configFileWarning) {
 	if cfg == nil {
 		return
 	}
@@ -73,7 +78,7 @@ func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	switch mode {
 	case "", ClaudeClientRequestIDOn, ClaudeClientRequestIDOff, ClaudeClientRequestIDPassthrough:
 	default:
-		log.Warnf("unrecognized claude header-defaults client-request-id %q (supported: on, off, passthrough); falling back to on", cfg.ClaudeHeaderDefaults.ClientRequestID)
+		recordConfigFileWarning(warnings, nil, fmt.Sprintf("unrecognized claude header-defaults client-request-id %q (supported: on, off, passthrough); falling back to on", cfg.ClaudeHeaderDefaults.ClientRequestID))
 		mode = ""
 	}
 	cfg.ClaudeHeaderDefaults.ClientRequestID = mode
@@ -411,6 +416,10 @@ func NormalizeSensitiveWordsReplace(in map[string]string) map[string]string {
 // NormalizeSensitivePatternsReplace validates Go RE2 regex rules, logs and drops
 // invalid or blank patterns, and preserves replacement values (including empty strings).
 func NormalizeSensitivePatternsReplace(in []SensitivePatternRule) []SensitivePatternRule {
+	return normalizeSensitivePatternsReplace(in, nil)
+}
+
+func normalizeSensitivePatternsReplace(in []SensitivePatternRule, warnings *[]configFileWarning) []SensitivePatternRule {
 	if len(in) == 0 {
 		return nil
 	}
@@ -420,11 +429,11 @@ func NormalizeSensitivePatternsReplace(in []SensitivePatternRule) []SensitivePat
 			continue
 		}
 		if _, errCompile := regexp.Compile(rule.Pattern); errCompile != nil {
-			log.WithFields(log.Fields{
+			recordConfigFileWarning(warnings, log.Fields{
 				"rule_index": i + 1,
 				"pattern":    rule.Pattern,
 				"error":      errCompile,
-			}).Warn("sensitive-patterns-replace rule dropped: invalid regex")
+			}, "sensitive-patterns-replace rule dropped: invalid regex")
 			continue
 		}
 		out = append(out, SensitivePatternRule{
@@ -440,24 +449,36 @@ func NormalizeSensitivePatternsReplace(in []SensitivePatternRule) []SensitivePat
 
 // SanitizeAntigravity normalizes Antigravity sensitive-word settings.
 func (cfg *Config) SanitizeAntigravity() {
+	cfg.sanitizeAntigravity(nil)
+}
+
+func (cfg *Config) sanitizeAntigravity(warnings *[]configFileWarning) {
 	if cfg == nil {
 		return
 	}
 	cfg.Antigravity.SensitiveWordsReplace = NormalizeSensitiveWordsReplace(cfg.Antigravity.SensitiveWordsReplace)
-	cfg.Antigravity.SensitivePatternsReplace = NormalizeSensitivePatternsReplace(cfg.Antigravity.SensitivePatternsReplace)
+	cfg.Antigravity.SensitivePatternsReplace = normalizeSensitivePatternsReplace(cfg.Antigravity.SensitivePatternsReplace, warnings)
 }
 
 // SanitizeDevin normalizes Devin sensitive-word settings.
 func (cfg *Config) SanitizeDevin() {
+	cfg.sanitizeDevin(nil)
+}
+
+func (cfg *Config) sanitizeDevin(warnings *[]configFileWarning) {
 	if cfg == nil {
 		return
 	}
 	cfg.Devin.SensitiveWordsReplace = NormalizeSensitiveWordsReplace(cfg.Devin.SensitiveWordsReplace)
-	cfg.Devin.SensitivePatternsReplace = NormalizeSensitivePatternsReplace(cfg.Devin.SensitivePatternsReplace)
+	cfg.Devin.SensitivePatternsReplace = normalizeSensitivePatternsReplace(cfg.Devin.SensitivePatternsReplace, warnings)
 }
 
 // NormalizeCloakConfig trims strings and removes blank sensitive words.
 func NormalizeCloakConfig(cloak *CloakConfig) *CloakConfig {
+	return normalizeCloakConfig(cloak, nil)
+}
+
+func normalizeCloakConfig(cloak *CloakConfig, warnings *[]configFileWarning) *CloakConfig {
 	if cloak == nil {
 		return nil
 	}
@@ -478,12 +499,16 @@ func NormalizeCloakConfig(cloak *CloakConfig) *CloakConfig {
 		cloak.SensitiveWords = nil
 	}
 	cloak.SensitiveWordsReplace = NormalizeSensitiveWordsReplace(cloak.SensitiveWordsReplace)
-	cloak.SensitivePatternsReplace = NormalizeSensitivePatternsReplace(cloak.SensitivePatternsReplace)
+	cloak.SensitivePatternsReplace = normalizeSensitivePatternsReplace(cloak.SensitivePatternsReplace, warnings)
 	return cloak
 }
 
 // SanitizeClaudeKeys normalizes headers for Claude credentials.
 func (cfg *Config) SanitizeClaudeKeys() {
+	cfg.sanitizeClaudeKeys(nil)
+}
+
+func (cfg *Config) sanitizeClaudeKeys(warnings *[]configFileWarning) {
 	if cfg == nil || len(cfg.ClaudeKey) == 0 {
 		return
 	}
@@ -492,7 +517,7 @@ func (cfg *Config) SanitizeClaudeKeys() {
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		entry.Cloak = NormalizeCloakConfig(entry.Cloak)
+		entry.Cloak = normalizeCloakConfig(entry.Cloak, warnings)
 		// Only a recognized value is rewritten. An unrecognized one is preserved as
 		// written so sanitizing a config file never destroys operator input; the
 		// request path falls back to the default profile and reports it once.

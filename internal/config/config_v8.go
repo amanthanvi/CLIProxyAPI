@@ -520,6 +520,10 @@ func groupLegacyKeys(keys *yaml.Node, provider string) *yaml.Node {
 // NormalizeConfigLayout removes conflicting legacy fields. migrate also moves
 // legacy-only fields; callers use it only for an explicit v8 configuration write.
 func NormalizeConfigLayout(data []byte, migrate bool) ([]byte, bool, error) {
+	return normalizeConfigLayout(data, migrate, nil)
+}
+
+func normalizeConfigLayout(data []byte, migrate bool, warnings *[]configFileWarning) ([]byte, bool, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, false, err
@@ -589,7 +593,7 @@ func NormalizeConfigLayout(data []byte, migrate bool) ([]byte, bool, error) {
 	if migrate {
 		// Existing unknown fields are ignored by the runtime. Retain their
 		// contents as comments while keeping new v8 writes strictly validated.
-		if err := commentUnknownV8Sections(root); err != nil {
+		if err := commentUnknownV8Sections(root, warnings); err != nil {
 			return nil, false, err
 		}
 		setYAMLPath(root, "config-version", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: "8"})
@@ -672,8 +676,8 @@ func warnUnrecognizedV8Section(section string) {
 	log.Warn(msg)
 }
 
-func commentUnknownV8Sections(root *yaml.Node) error {
-	if err := commentUnknownV8Fields(root, root, v8AllowedRoots(), ""); err != nil {
+func commentUnknownV8Sections(root *yaml.Node, warnings *[]configFileWarning) error {
+	if err := commentUnknownV8Fields(root, root, v8AllowedRoots(), "", warnings); err != nil {
 		return err
 	}
 
@@ -725,7 +729,7 @@ func commentUnknownV8Sections(root *yaml.Node) error {
 		if node == nil || node.Kind != yaml.MappingNode || children[path] == nil {
 			return nil
 		}
-		if err := commentUnknownV8Fields(node, root, children[path], path); err != nil {
+		if err := commentUnknownV8Fields(node, root, children[path], path, warnings); err != nil {
 			return err
 		}
 		for i := 0; i+1 < len(node.Content); i += 2 {
@@ -744,7 +748,7 @@ func commentUnknownV8Sections(root *yaml.Node) error {
 	return nil
 }
 
-func commentUnknownV8Fields(node *yaml.Node, archive *yaml.Node, allowed map[string]bool, path string) error {
+func commentUnknownV8Fields(node *yaml.Node, archive *yaml.Node, allowed map[string]bool, path string, warnings *[]configFileWarning) error {
 	var comments []string
 	for i := 0; i+1 < len(node.Content); {
 		key := node.Content[i].Value
@@ -756,7 +760,11 @@ func commentUnknownV8Fields(node *yaml.Node, archive *yaml.Node, allowed map[str
 		if path != "" {
 			section = path + "." + key
 		}
-		warnUnrecognizedV8Section(section)
+		if warnings == nil {
+			warnUnrecognizedV8Section(section)
+		} else {
+			*warnings = append(*warnings, configFileWarning{migration: true, section: section})
+		}
 		keyNode := *node.Content[i]
 		keyNode.Value = section
 		entry := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{&keyNode, node.Content[i+1]}}
@@ -806,7 +814,7 @@ func normalizeV8PrivateIPAlias(root *yaml.Node, migrate bool) (bool, error) {
 
 // restoreV8Layout lets v0 handlers update the effective runtime fields without
 // reintroducing their legacy spellings into an existing v8 document.
-func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.Node) error {
+func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.Node, warnings *[]configFileWarning) error {
 	for _, path := range v8Paths {
 		upstreams := yamlPath(layout, "api-keys")
 		clientKeyCollision := path.old == "api-keys" && upstreams != nil && upstreams.Kind == yaml.MappingNode
@@ -828,7 +836,7 @@ func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.N
 			continue
 		}
 		if baseline == nil {
-			cfg, err := ParseConfigBytes(original)
+			cfg, err := parseConfigBytes(original, warnings)
 			if err != nil {
 				return err
 			}

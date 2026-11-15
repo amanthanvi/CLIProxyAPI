@@ -15,7 +15,32 @@ import (
 // Existing v8 documents are saved in the latest layout. Successful migration
 // also synchronizes cfg's OAuth scope for runtime snapshots.
 func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...bool) error {
-	persistCfg := cfg
+	// SDK values may implement YAML/Text marshaling callbacks. Render them
+	// before the file transaction so reentrant readers cannot deadlock.
+	rendered, err := yaml.Marshal((*legacyConfig)(cfg))
+	if err != nil {
+		return err
+	}
+	var generated yaml.Node
+	if err = yaml.Unmarshal(rendered, &generated); err != nil {
+		return err
+	}
+	if generated.Kind != yaml.DocumentNode || len(generated.Content) == 0 || generated.Content[0] == nil {
+		return fmt.Errorf("invalid generated yaml structure")
+	}
+	if generated.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("expected generated root mapping node")
+	}
+	configFileMu.Lock()
+	var warnings []configFileWarning
+	defer func() {
+		configFileMu.Unlock()
+		emitConfigFileWarnings(warnings)
+	}()
+	return saveConfigPreserveCommentsLocked(configFile, cfg, &generated, &warnings, migrateV8...)
+}
+
+func saveConfigPreserveCommentsLocked(configFile string, cfg *Config, generated *yaml.Node, warnings *[]configFileWarning, migrateV8 ...bool) error {
 	migrating := len(migrateV8) > 0 && migrateV8[0]
 	// Load original YAML as a node tree to preserve comments and ordering.
 	data, err := os.ReadFile(configFile)
@@ -42,22 +67,6 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 	layout = expandConfigAliases(layout)
 	migrating = migrating || IsV8ConfigLayout(layout)
 
-	// Marshal the current cfg to YAML, then unmarshal to a yaml.Node we can merge from.
-	rendered, err := yaml.Marshal((*legacyConfig)(persistCfg))
-	if err != nil {
-		return err
-	}
-	var generated yaml.Node
-	if err = yaml.Unmarshal(rendered, &generated); err != nil {
-		return err
-	}
-	if generated.Kind != yaml.DocumentNode || len(generated.Content) == 0 || generated.Content[0] == nil {
-		return fmt.Errorf("invalid generated yaml structure")
-	}
-	if generated.Content[0].Kind != yaml.MappingNode {
-		return fmt.Errorf("expected generated root mapping node")
-	}
-
 	// Keep obsolete roots until v8 migration can preserve them as comments.
 	if !migrating {
 		removeLegacyAuthBlock(original.Content[0])
@@ -78,7 +87,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
 	mergeMappingPreserve(original.Content[0], generated.Content[0])
-	if err = restoreV8Layout(original.Content[0], layout, data, generated.Content[0]); err != nil {
+	if err = restoreV8Layout(original.Content[0], layout, data, generated.Content[0], warnings); err != nil {
 		return err
 	}
 	if !migrating {
@@ -109,7 +118,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 	data = NormalizeCommentIndentation(buf.Bytes())
 	var migrated *Config
 	if migrating {
-		data, _, err = NormalizeConfigLayout(data, true)
+		data, _, err = normalizeConfigLayout(data, true, warnings)
 		if err != nil {
 			return err
 		}
@@ -131,6 +140,12 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 // SaveConfigPreserveCommentsUpdateNestedScalar updates a nested scalar key path like ["a","b"]
 // while preserving comments and positions.
 func SaveConfigPreserveCommentsUpdateNestedScalar(configFile string, path []string, value string) error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
+	return saveConfigPreserveCommentsUpdateNestedScalarLocked(configFile, path, value)
+}
+
+func saveConfigPreserveCommentsUpdateNestedScalarLocked(configFile string, path []string, value string) error {
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return err

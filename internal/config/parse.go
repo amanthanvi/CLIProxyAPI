@@ -12,6 +12,10 @@ import (
 // ParseConfigBytes parses a YAML configuration payload into Config and applies the same
 // in-memory normalizations as LoadConfigOptional, without persisting any changes to disk.
 func ParseConfigBytes(data []byte) (*Config, error) {
+	return parseConfigBytes(data, nil)
+}
+
+func parseConfigBytes(data []byte, warnings *[]configFileWarning) (*Config, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("config payload is empty")
 	}
@@ -97,7 +101,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
 		cfg.RedisUsageQueueRetentionSeconds = 60
 	} else if cfg.RedisUsageQueueRetentionSeconds > 3600 {
-		log.WithField("value", cfg.RedisUsageQueueRetentionSeconds).Warn("redis-usage-queue-retention-seconds too large; clamping to 3600")
+		recordConfigFileWarning(warnings, log.Fields{"value": cfg.RedisUsageQueueRetentionSeconds}, "redis-usage-queue-retention-seconds too large; clamping to 3600")
 		cfg.RedisUsageQueueRetentionSeconds = 3600
 	}
 
@@ -119,16 +123,16 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeXAIKeys()
 	cfg.SanitizeMetaKeys()
 	cfg.SanitizeCodexHeaderDefaults()
-	cfg.SanitizeClaudeHeaderDefaults()
-	cfg.SanitizeClaudeKeys()
-	cfg.SanitizeAntigravity()
-	cfg.SanitizeDevin()
+	cfg.sanitizeClaudeHeaderDefaults(warnings)
+	cfg.sanitizeClaudeKeys(warnings)
+	cfg.sanitizeAntigravity(warnings)
+	cfg.sanitizeDevin(warnings)
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
 	cfg.SanitizeOAuthSettings()
 	cfg.SanitizeOAuthRequestScopedErrors()
-	cfg.SanitizePayloadRules()
+	cfg.sanitizePayloadRules(warnings)
 
 	return &cfg, nil
 }

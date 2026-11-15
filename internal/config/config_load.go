@@ -41,6 +41,8 @@ func ComputeSourceHash(data []byte) string {
 // copies stay identical. When the plaintext cannot be removed it returns an error and
 // leaves configFile untouched, so every later attempt refuses the file again.
 func PrepareConfigFileForUpload(configFile string) error {
+	configFileMu.Lock()
+	defer configFileMu.Unlock()
 	data, errRead := os.ReadFile(configFile)
 	if errRead != nil {
 		return errRead
@@ -155,6 +157,12 @@ func managementSecretKeyPath(data []byte) []string {
 // If optional is true and the file is missing, it returns an empty Config.
 // If optional is true and the file is empty or invalid, it returns an empty Config.
 func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
+	configFileMu.Lock()
+	var warnings []configFileWarning
+	defer func() {
+		configFileMu.Unlock()
+		emitConfigFileWarnings(warnings)
+	}()
 	// Read the entire configuration file into memory.
 	data, err := os.ReadFile(configFile)
 	if err != nil {
@@ -170,8 +178,11 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
-	if optional && len(bytes.TrimSpace(data)) == 0 {
+	if len(bytes.TrimSpace(data)) == 0 {
+		if !optional {
+			return nil, errors.New("config file is empty")
+		}
+		// Cloud deploy standby retains its optional empty-file behavior.
 		cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 		cfg.NormalizePluginsConfig()
 		cfg.NormalizeClaudeConfig()
@@ -251,7 +262,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 		// Persist the hashed value back to the config file to avoid re-hashing on next startup.
 		// Preserve YAML comments and ordering; update only the nested key.
-		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, managementSecretKeyPath(data), hashed)
+		_ = saveConfigPreserveCommentsUpdateNestedScalarLocked(configFile, managementSecretKeyPath(data), hashed)
 	}
 
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
@@ -277,7 +288,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
 		cfg.RedisUsageQueueRetentionSeconds = 60
 	} else if cfg.RedisUsageQueueRetentionSeconds > 3600 {
-		log.WithField("value", cfg.RedisUsageQueueRetentionSeconds).Warn("redis-usage-queue-retention-seconds too large; clamping to 3600")
+		recordConfigFileWarning(&warnings, log.Fields{"value": cfg.RedisUsageQueueRetentionSeconds}, "redis-usage-queue-retention-seconds too large; clamping to 3600")
 		cfg.RedisUsageQueueRetentionSeconds = 3600
 	}
 
@@ -313,14 +324,14 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SanitizeCodexHeaderDefaults()
 
 	// Sanitize Claude header defaults.
-	cfg.SanitizeClaudeHeaderDefaults()
+	cfg.sanitizeClaudeHeaderDefaults(&warnings)
 
 	// Sanitize Claude key headers
-	cfg.SanitizeClaudeKeys()
+	cfg.sanitizeClaudeKeys(&warnings)
 
 	// Sanitize Antigravity and Devin sensitive-word replacement maps.
-	cfg.SanitizeAntigravity()
-	cfg.SanitizeDevin()
+	cfg.sanitizeAntigravity(&warnings)
+	cfg.sanitizeDevin(&warnings)
 
 	// Sanitize OpenAI compatibility providers: drop entries without base-url
 	cfg.SanitizeOpenAICompatibility()
@@ -338,7 +349,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SanitizeOAuthRequestScopedErrors()
 
 	// Validate raw payload rules and drop invalid entries.
-	cfg.SanitizePayloadRules()
+	cfg.sanitizePayloadRules(&warnings)
 
 	// Only conflicting legacy fields are removed on load. A legacy-only document
 	// stays legacy until a v8 configuration write explicitly migrates it.

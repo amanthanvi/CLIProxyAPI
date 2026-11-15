@@ -10,14 +10,18 @@ import (
 
 // SanitizePayloadRules validates raw JSON payload rule params and drops invalid rules.
 func (cfg *Config) SanitizePayloadRules() {
+	cfg.sanitizePayloadRules(nil)
+}
+
+func (cfg *Config) sanitizePayloadRules(warnings *[]configFileWarning) {
 	if cfg == nil {
 		return
 	}
-	cfg.Payload.DefaultRaw = sanitizePayloadRawRules(cfg.Payload.DefaultRaw, "default-raw")
-	cfg.Payload.OverrideRaw = sanitizePayloadRawRules(cfg.Payload.OverrideRaw, "override-raw")
+	cfg.Payload.DefaultRaw = sanitizePayloadRawRules(cfg.Payload.DefaultRaw, "default-raw", warnings)
+	cfg.Payload.OverrideRaw = sanitizePayloadRawRules(cfg.Payload.OverrideRaw, "override-raw", warnings)
 }
 
-func sanitizePayloadRawRules(rules []PayloadRule, section string) []PayloadRule {
+func sanitizePayloadRawRules(rules []PayloadRule, section string, warnings *[]configFileWarning) []PayloadRule {
 	if len(rules) == 0 {
 		return rules
 	}
@@ -35,11 +39,11 @@ func sanitizePayloadRawRules(rules []PayloadRule, section string) []PayloadRule 
 			}
 			trimmed := bytes.TrimSpace(raw)
 			if len(trimmed) == 0 || !json.Valid(trimmed) {
-				log.WithFields(log.Fields{
+				recordConfigFileWarning(warnings, log.Fields{
 					"section":    section,
 					"rule_index": i + 1,
 					"param":      path,
-				}).Warn("payload rule dropped: invalid raw JSON")
+				}, "payload rule dropped: invalid raw JSON")
 				invalid = true
 				break
 			}
