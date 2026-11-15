@@ -466,12 +466,14 @@ type DiscoveryInterfacesConfig struct {
 // KVStoreConfig holds configuration for the local persistent bbolt KV store.
 type KVStoreConfig struct {
 	// Disabled turns off the local bbolt KV store when true (fallback to in-memory).
-	// Defaults to false (bbolt enabled by default in non-Home mode).
+	// An omitted kv-store section leaves persistence disabled.
 	Disabled bool `yaml:"disabled" json:"disabled"`
 
 	// Path is the file system path to the bbolt database file.
 	// When empty, it defaults to "<auth-dir>/kv.db".
 	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+
+	disabledSet bool
 }
 
 // EffectivePath returns the trimmed Path or DefaultKVStorePath ("kv.db") when empty.
@@ -582,6 +584,10 @@ type RoutingConfig struct {
 	// SessionAffinityTTL specifies how long session-to-auth bindings are retained.
 	// Default: 1h. Accepts duration strings like "30m", "1h", "2h30m".
 	SessionAffinityTTL string `yaml:"session-affinity-ttl,omitempty" json:"session-affinity-ttl,omitempty"`
+
+	// SessionAffinityStatePath enables optional Linux checkpointing in an existing private
+	// state directory outside AuthDir. Empty disables persistence.
+	SessionAffinityStatePath string `yaml:"session-affinity-state-path,omitempty" json:"session-affinity-state-path,omitempty"`
 
 	// SessionAffinitySubagents controls whether subagents (child sessions with parent references)
 	// inherit and bind to the parent's upstream credential across all providers (Claude, Codex,

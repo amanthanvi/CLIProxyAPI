@@ -43,6 +43,7 @@ type claudeUsageTokens struct {
 	ThinkingTokens           int64
 	HasThinkingTokens        bool
 	HasUsage                 bool
+	ServiceTier              string
 }
 
 // ToolCallAccumulator holds the state for accumulating tool call data
@@ -58,6 +59,16 @@ func (u *claudeUsageTokens) Merge(usage ojson.Result) {
 		return
 	}
 	u.HasUsage = true
+	if speed := usage.Get("speed"); speed.Exists() {
+		switch speed.String() {
+		case "fast":
+			u.ServiceTier = "priority"
+		case "standard":
+			u.ServiceTier = "default"
+		default:
+			u.ServiceTier = ""
+		}
+	}
 	if inputTokens := usage.Get("input_tokens"); inputTokens.Exists() {
 		u.InputTokens = inputTokens.Int()
 	}
@@ -327,6 +338,9 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 				}
 			}
 			p.Usage.Merge(usage)
+			if p.Usage.ServiceTier != "" {
+				_ = templateDoc.Set("service_tier", p.Usage.ServiceTier)
+			}
 			promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := p.Usage.OpenAIUsage()
 			_ = templateDoc.Set("usage.prompt_tokens", promptTokens)
 			_ = templateDoc.Set("usage.completion_tokens", completionTokens)
@@ -343,6 +357,9 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 		if p.Usage.HasUsage && !p.TrailingUsageSent {
 			p.TrailingUsageSent = true
 			usageDoc := ojson.NewDoc([]byte(`{"id":"","object":"chat.completion.chunk","created":0,"model":"","choices":[]}`))
+			if p.Usage.ServiceTier != "" {
+				_ = usageDoc.Set("service_tier", p.Usage.ServiceTier)
+			}
 			if p.ResponseID != "" {
 				_ = usageDoc.Set("id", p.ResponseID)
 			}
@@ -547,6 +564,9 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 	}
 
 	if usageTokens.HasUsage {
+		if usageTokens.ServiceTier != "" {
+			_ = outDoc.Set("service_tier", usageTokens.ServiceTier)
+		}
 		promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := usageTokens.OpenAIUsage()
 		_ = outDoc.Set("usage.prompt_tokens", promptTokens)
 		_ = outDoc.Set("usage.completion_tokens", completionTokens)

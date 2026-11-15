@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/MoeForge/moego/ojson"
-	"github.com/google/uuid"
 	metaauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/meta"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -1061,8 +1060,8 @@ func TestMetaExecutor_PrepareRequest_ClientIdHeader_Issue6117(t *testing.T) {
 	if got := req.Header.Get("X-Client-Id"); got != metaClientSurface {
 		t.Errorf("X-Client-Id = %q, want %q", got, metaClientSurface)
 	}
-	if got := req.Header.Get("User-Agent"); !strings.Contains(got, "muse-build/"+metaClientVersion) {
-		t.Errorf("User-Agent = %q, want muse-build/%s", got, metaClientVersion)
+	if got := req.Header.Get("User-Agent"); got != metaUserAgent() {
+		t.Errorf("User-Agent = %q, want %q", got, metaUserAgent())
 	}
 	if _, exists := req.Header["X-Client-Id:"]; exists {
 		t.Errorf("X-Client-Id: with trailing colon must not exist in headers")
@@ -1087,17 +1086,10 @@ func TestMetaExecutor_ApplyMetaAPIHeaders_ClientIdHeader_Issue6117(t *testing.T)
 	if got := req.Header.Get("X-Client-Id"); got != metaClientSurface {
 		t.Errorf("applyMetaAPIHeaders: X-Client-Id = %q, want %q", got, metaClientSurface)
 	}
-	sessionID := req.Header.Get("X-Tbh-Session-Id")
-	if _, errParse := uuid.Parse(sessionID); errParse != nil {
-		t.Errorf("X-Tbh-Session-Id = %q, want a UUID", sessionID)
-	}
-	for _, name := range []string{"X-Meta-Ai-Gateway-Session-Id", "X-Tbh-Thread-Id", "X-Tbh-Root-Session-Id"} {
-		if got := req.Header.Get(name); got != sessionID {
-			t.Errorf("%s = %q, want %q", name, got, sessionID)
+	for _, name := range []string{"X-Tbh-Session-Id", "X-Meta-Ai-Gateway-Session-Id", "X-Tbh-Thread-Id", "X-Tbh-Root-Session-Id", "X-Tbh-Agent-Role"} {
+		if got := req.Header.Get(name); got != "" {
+			t.Errorf("%s = %q, want no generated identity", name, got)
 		}
-	}
-	if got := req.Header.Get("X-Tbh-Agent-Role"); got != "main" {
-		t.Errorf("X-Tbh-Agent-Role = %q, want main", got)
 	}
 	if got := req.Header.Get("X-Tbh-Contributor-Mode"); got != "" {
 		t.Errorf("X-Tbh-Contributor-Mode = %q, want empty", got)
@@ -1107,10 +1099,13 @@ func TestMetaExecutor_ApplyMetaAPIHeaders_ClientIdHeader_Issue6117(t *testing.T)
 	if errContributorReq != nil {
 		t.Fatal(errContributorReq)
 	}
-	contributorReq.Header.Set("X-Tbh-Session-Id", sessionID)
+	contributorReq.Header.Set("X-Tbh-Session-Id", "caller-session")
 	applyMetaAPIHeaders(contributorReq, auth, "test-key", true, nil, "muse-wonder-1.0-contributor")
-	if got := contributorReq.Header.Get("X-Tbh-Contributor-Mode"); got != "1" {
-		t.Errorf("contributor model X-Tbh-Contributor-Mode = %q, want 1", got)
+	if got := contributorReq.Header.Get("X-Tbh-Contributor-Mode"); got != "" {
+		t.Errorf("contributor model X-Tbh-Contributor-Mode = %q, want absent", got)
+	}
+	if got := contributorReq.Header.Get("X-Tbh-Session-Id"); got != "caller-session" {
+		t.Errorf("caller session changed: %q", got)
 	}
 }
 
@@ -1152,24 +1147,24 @@ func TestMetaExecutor_ContributorModeHeader_Issue7272(t *testing.T) {
 			wantContributor: "",
 		},
 		{
-			name:            "contributor muse-wonder-1.0-contributor sets header",
+			name:            "contributor muse-wonder-1.0-contributor omits header",
 			model:           "muse-wonder-1.0-contributor",
-			wantContributor: "1",
+			wantContributor: "",
 		},
 		{
-			name:            "contributor muse-wonder-full-1.0-contributor sets header",
+			name:            "contributor muse-wonder-full-1.0-contributor omits header",
 			model:           "muse-wonder-full-1.0-contributor",
-			wantContributor: "1",
+			wantContributor: "",
 		},
 		{
-			name:            "contributor muse-spark-1.3-contributor sets header",
+			name:            "contributor muse-spark-1.3-contributor omits header",
 			model:           "muse-spark-1.3-contributor",
-			wantContributor: "1",
+			wantContributor: "",
 		},
 		{
-			name:            "contributor model with thinking suffix sets header",
+			name:            "contributor model with thinking suffix omits header",
 			model:           "muse-wonder-1.0-contributor(high)",
-			wantContributor: "1",
+			wantContributor: "",
 		},
 	}
 
@@ -1229,7 +1224,7 @@ func TestMetaExecutor_ContributorModeHeader_Issue7272(t *testing.T) {
 		})
 	}
 
-	t.Run("payload override model determines contributor header", func(t *testing.T) {
+	t.Run("payload override model does not inject contributor header", func(t *testing.T) {
 		overrideExec := NewMetaExecutor(&config.Config{
 			Payload: config.PayloadConfig{
 				Override: []config.PayloadRule{
@@ -1258,8 +1253,8 @@ func TestMetaExecutor_ContributorModeHeader_Issue7272(t *testing.T) {
 		if len(capturedHeaders) != before+1 {
 			t.Fatalf("captured %d requests, want %d", len(capturedHeaders), before+1)
 		}
-		if got := capturedHeaders[len(capturedHeaders)-1].Get("X-Tbh-Contributor-Mode"); got != "1" {
-			t.Errorf("override to contributor: X-Tbh-Contributor-Mode = %q, want 1", got)
+		if got := capturedHeaders[len(capturedHeaders)-1].Get("X-Tbh-Contributor-Mode"); got != "" {
+			t.Errorf("override to contributor: X-Tbh-Contributor-Mode = %q, want absent", got)
 		}
 
 		before = len(capturedHeaders)

@@ -16,6 +16,12 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 ```
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 
+On Windows, run broad Go and race suites in WSL/Linux. The Windows discovery
+and live-test executables can trigger interactive security prompts and interrupt
+other work. Do not weaken UAC or firewall policy to suppress those prompts.
+Qualify necessary Windows-only tests separately and report platform coverage
+that was not run; a Linux pass is not Windows-specific validation.
+
 ## Config
 - Default config: `config.yaml` (template: `config.example.yaml`)
 - `.env` is auto-loaded from the working directory

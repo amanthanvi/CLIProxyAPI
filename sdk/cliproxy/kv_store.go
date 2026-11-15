@@ -15,7 +15,7 @@ func (s *Service) applyKVStoreConfig(cfg *config.Config) {
 		return
 	}
 	s.kvStoreManaged.Store(true)
-	if cfg == nil || cfg.Home.Enabled || home.Current() != nil || cfg.KVStore.Disabled {
+	if cfg == nil || cfg.Home.Enabled || home.Current() != nil || !cfg.KVStore.Enabled() {
 		if errShutdown := kvstore.ShutdownLocal(); errShutdown != nil {
 			log.Errorf("failed to shutdown local kv store: %v", errShutdown)
 		}

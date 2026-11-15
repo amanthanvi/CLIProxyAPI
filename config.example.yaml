@@ -99,9 +99,10 @@ server:
     # auth-required: true               # Advertise auth=1 (credentials required)
 
   # Local persistent KV store settings (bbolt). Ignored when Home mode is enabled.
+  # Omission or an empty section disables persistence. Explicit disabled:false or a path opts in.
   kv-store:
-    # Disable local bbolt KV persistence and fall back to in-memory maps (default: false).
-    disabled: false
+    # Set false to explicitly enable local persistence instead of in-memory maps.
+    disabled: true
     # File path for the bbolt database (default: "<auth-dir>/kv.db" when empty).
     path: ""
 
@@ -207,6 +208,13 @@ routing:
   session-affinity: false # default: false
   # How long session-to-auth bindings are retained. Default: 1h
   session-affinity-ttl: "1h"
+  # Optional Linux restart checkpoint. Empty disables persistence. Use an absolute path
+  # outside auth-dir in a pre-created, service-owned 0700 directory; the file is 0600.
+  # Example: /var/lib/cliproxyapi/session-affinity.json. Treat routing IDs as sensitive.
+  # Each path must be exclusively owned by one service process; shared writers are unsupported.
+  # Checkpoints occur every 30s and after a successful graceful drain on planned shutdown.
+  # Crashes can lose the last 30s of bindings; provider cache retention is independent.
+  session-affinity-state-path: ""
   # When true (default), subagents (child sessions with parent references) inherit and bind
   # to the parent's upstream credential across all providers (Claude, Codex, Antigravity, Gemini),
   # for the same model, maximizing Prompt/KV Cache reuse and minimizing TTFT.
@@ -532,6 +540,9 @@ upstream:
 
     # When true, return original model IDs in Anthropic model list responses instead of cloaked IDs.
     disable-cloaking-model-list: false
+    # Route bare claude-* IDs only when they have no route and the prefixed route is Claude-only.
+    # Applies to /v1/messages and /v1/messages/count_tokens; Home and plugin routing are unchanged.
+    # bare-model-prefix: "claude"
 
     # Anthropic-Beta is assembled per request rather than sent as a fixed list, matching
     # Claude Code: context-1m sits right after claude-code, mid-conversation-system

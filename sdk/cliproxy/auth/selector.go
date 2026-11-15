@@ -58,6 +58,8 @@ func UnwrapWeightedRoundRobinSelector(selector Selector) *WeightedRoundRobinSele
 		return weighted
 	}
 	if affinity, ok := selector.(*SessionAffinitySelector); ok && affinity != nil {
+		affinity.stateMu.RLock()
+		defer affinity.stateMu.RUnlock()
 		if weighted, okFallback := affinity.fallback.(*WeightedRoundRobinSelector); okFallback {
 			return weighted
 		}
@@ -104,12 +106,20 @@ const (
 )
 
 type modelCooldownError struct {
-	model          string
-	resetIn        time.Duration
-	provider       string
-	cause          error
-	claudeCooldown bool
-	claudeSignals  map[string]string
+	model              string
+	resetIn            time.Duration
+	provider           string
+	cause              error
+	claudeCooldown     bool
+	claudeSignals      map[string]string
+	claudeResetHeaders http.Header
+}
+
+func (e *modelCooldownError) ClaudeRateLimitResponseHeaders() http.Header {
+	if e == nil {
+		return nil
+	}
+	return e.claudeResetHeaders.Clone()
 }
 
 // NewModelCooldownError creates an error representing model-level cooldown.
@@ -406,94 +416,10 @@ func (e *modelCooldownError) SafeResponseHeaders() http.Header {
 
 func (e *modelCooldownError) Headers() http.Header {
 	headers := e.SafeResponseHeaders()
-	if e != nil && e.claudeCooldown && e.resetIn > 0 {
-		e.appendClaudeUnifiedHeaders(headers)
+	for key, values := range SafeClaudeRateLimitResponseHeaders(e, time.Now()) {
+		headers[key] = values
 	}
 	return headers
-}
-
-func (e *modelCooldownError) appendClaudeUnifiedHeaders(headers http.Header) {
-	resetSeconds := e.resetSeconds()
-	if resetSeconds <= 0 {
-		return
-	}
-	resetAt := time.Now().Unix() + resetSeconds
-	resetStr := strconv.FormatInt(resetAt, 10)
-
-	if hasRejectedClaudeUnifiedSignals(e.claudeSignals) {
-		for key, value := range e.claudeSignals {
-			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "anthropic-ratelimit-unified-") {
-				headers.Set(key, value)
-			}
-		}
-		headers.Set("Anthropic-Ratelimit-Unified-Status", "rejected")
-		headers.Set("Anthropic-Ratelimit-Unified-Reset", resetStr)
-
-		rejWindows := rejectedClaudeUnifiedWindows(headers)
-		claim := strings.ToLower(strings.TrimSpace(headers.Get("Anthropic-Ratelimit-Unified-Representative-Claim")))
-		if len(rejWindows) == 0 && claim == "" && isClaudeOverageOnlyHeaders(headers) {
-			claim = "overage"
-			headers.Set("Anthropic-Ratelimit-Unified-Representative-Claim", claim)
-		}
-		if len(rejWindows) == 0 && claim != "overage" {
-			fallbackWindow := fallbackClaudeWindowForClaim(headers, claim, e.resetIn)
-			if fallbackWindow != "" {
-				statusHeader := claudeUnifiedWindowHeader(fallbackWindow, "Status")
-				if strings.TrimSpace(headers.Get(statusHeader)) == "" {
-					headers.Set(statusHeader, "rejected")
-					rejWindows = append(rejWindows, fallbackWindow)
-				}
-			}
-		}
-
-		if len(rejWindows) == 1 {
-			headers.Set(claudeUnifiedWindowHeader(rejWindows[0], "Reset"), resetStr)
-		} else if len(rejWindows) > 1 {
-			latestHeader := ""
-			var latestEpoch int64
-			for _, window := range rejWindows {
-				resetHeader := claudeUnifiedWindowHeader(window, "Reset")
-				raw := strings.TrimSpace(headers.Get(resetHeader))
-				if raw == "" {
-					headers.Set(resetHeader, resetStr)
-					continue
-				}
-				if parsed, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && (latestHeader == "" || parsed >= latestEpoch) {
-					latestHeader = resetHeader
-					latestEpoch = parsed
-				}
-			}
-			if latestHeader != "" {
-				headers.Set(latestHeader, resetStr)
-			}
-		}
-
-		if claim == "" {
-			if inferred := inferClaudeRepresentativeClaim(headers, rejWindows, e.resetIn); inferred != "" {
-				headers.Set("Anthropic-Ratelimit-Unified-Representative-Claim", inferred)
-			}
-		}
-		if strings.TrimSpace(headers.Get("Anthropic-Ratelimit-Unified-Overage-Status")) == "" {
-			headers.Set("Anthropic-Ratelimit-Unified-Overage-Status", "rejected")
-		}
-		return
-	}
-
-	claim := "five_hour"
-	if e.resetIn > 5*time.Hour {
-		claim = "seven_day"
-	}
-	headers.Set("Anthropic-Ratelimit-Unified-Status", "rejected")
-	headers.Set("Anthropic-Ratelimit-Unified-Reset", resetStr)
-	headers.Set("Anthropic-Ratelimit-Unified-Representative-Claim", claim)
-	headers.Set("Anthropic-Ratelimit-Unified-Overage-Status", "rejected")
-	if claim == "five_hour" {
-		headers.Set("Anthropic-Ratelimit-Unified-5h-Status", "rejected")
-		headers.Set("Anthropic-Ratelimit-Unified-5h-Reset", resetStr)
-	} else {
-		headers.Set("Anthropic-Ratelimit-Unified-7d-Status", "rejected")
-		headers.Set("Anthropic-Ratelimit-Unified-7d-Reset", resetStr)
-	}
 }
 
 func claudeUnifiedWindowName(headerKey string) (string, bool) {
@@ -996,7 +922,9 @@ func getAvailableAuthsWithPriorityModeForRequest(ctx context.Context, auths []*A
 			claudeCooldown, claudeSignals := claudeCooldownMetadataForAuths(ctx, auths, func(*Auth) string {
 				return model
 			}, now, clientHeaders...)
-			return nil, newModelCooldownErrorForCandidates(model, providerForError, resetIn, nil, claudeCooldown, claudeSignals)
+			err := newModelCooldownErrorForCandidates(model, providerForError, resetIn, nil, claudeCooldown, claudeSignals)
+			err.claudeResetHeaders = claudeResetHeadersForPool(auths, func(*Auth) string { return model }, earliest, now)
+			return nil, err
 		}
 		return nil, newAuthUnavailableError(earliest, now)
 	}
@@ -1403,6 +1331,8 @@ func availabilityBlock(unavailable, quotaExceeded bool, nextRetryAfter, nextReco
 // It extracts session ID from multiple sources and maintains session-to-auth
 // mappings with automatic failover when the bound auth becomes unavailable.
 type SessionAffinitySelector struct {
+	stateMu           sync.RWMutex
+	authIdentities    map[string]string
 	fallback          Selector
 	cache             *SessionCache
 	matcher           *cliproxysession.MerklePrefixMatcher
@@ -1623,6 +1553,11 @@ func (s *SessionAffinitySelector) Trees() *cliproxysession.InMemorySessionTreeSt
 // a session uses multiple models (e.g., gemini-2.5-pro and gemini-3-flash-preview)
 // that may be supported by different auth credentials, and to avoid cross-provider conflicts.
 func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (selected *Auth, errPick error) {
+	s.stateMu.Lock()
+	s.validateAccountHints(auths)
+	s.stateMu.Unlock()
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -2118,6 +2053,8 @@ func (s *SessionAffinitySelector) Stop() {
 	if s == nil {
 		return
 	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	if s.cache != nil {
 		s.cache.Stop()
 	}
@@ -2132,6 +2069,9 @@ func (s *SessionAffinitySelector) InvalidateAuth(authID string) {
 	if s == nil {
 		return
 	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	delete(s.authIdentities, authID)
 	if s.cache != nil {
 		s.cache.InvalidateAuth(authID)
 	}
@@ -2153,6 +2093,8 @@ func (s *SessionAffinitySelector) ForgetAuthUpTo(authID string, maxEpoch, maxGen
 	if s == nil || authID == "" {
 		return
 	}
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
 	if epochForgetter, ok := s.fallback.(interface {
 		ForgetAuthUpTo(string, uint64, uint64)
 	}); ok && epochForgetter != nil {
@@ -2168,7 +2110,12 @@ func (s *SessionAffinitySelector) ForgetAuthUpTo(authID string, maxEpoch, maxGen
 // It never selects a credential, creates a binding, rebinds, or refreshes TTL.
 // Optional authFilters allow callers (such as Manager) to exclude credentials that do not match the requested provider.
 func (s *SessionAffinitySelector) LookupAffinity(provider, model, sessionID string, authFilters ...func(authID string) bool) (string, string) {
-	if s == nil || s.cache == nil {
+	if s == nil {
+		return "", "unsupported"
+	}
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	if s.cache == nil {
 		return "", "unsupported"
 	}
 	provider = strings.TrimSpace(provider)
@@ -2269,6 +2216,8 @@ func (s *SessionAffinitySelector) OnResult(res Result) {
 	if s == nil || res.AuthID == "" {
 		return
 	}
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
 
 	explicitID, explicitFallbackID := extractExplicitSessionIDs(res.Options.Headers, res.Options.OriginalRequest, res.Options.Metadata)
 	if explicitID != "" {
@@ -2377,6 +2326,8 @@ func (s *SessionAffinitySelector) boundAuthForRequest(providers []string, model 
 	if s == nil {
 		return "", false
 	}
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
 	modelKey := canonicalModelKey(model)
 	candidateProviders := make([]string, 0, len(providers)+1)
 	candidateProviders = append(candidateProviders, "mixed")

@@ -277,6 +277,7 @@ func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	decoded := legacyConfig(*cfg)
+	decoded.KVStore = KVStoreConfig{Disabled: true}
 	if err = root.Decode(&decoded); err != nil {
 		return err
 	}

@@ -8,9 +8,15 @@ import (
 // turn may stop new claims, but must never silently drop a frame that was
 // already accepted. The forward loop relies on the queued frame surviving
 // end() so it can be answered instead of timing the client out.
+// Managed overlay: claims require the running response to be observed first.
+func observeResponseCreatedForTest(local *responsesLocalInterrupt, id string) {
+	local.observe([]byte(`{"type":"response.created","response":{"id":"` + id + `"}}`))
+}
+
 func TestResponsesLocalInterruptRetainsClaimedFrameAfterEnd(t *testing.T) {
 	local := newResponsesLocalInterrupt()
 	local.begin(false)
+	observeResponseCreatedForTest(local, "unknown")
 	if !local.deliver([]byte(`{"type":"response.interrupt","response_id":"unknown"}`)) {
 		t.Fatal("frame was not claimed while active")
 	}
@@ -41,9 +47,11 @@ func TestResponsesLocalInterruptRetainsClaimedFrameAfterEnd(t *testing.T) {
 func TestResponsesLocalInterruptRejectsWhenQueueFull(t *testing.T) {
 	local := newResponsesLocalInterrupt()
 	local.begin(false)
+	observeResponseCreatedForTest(local, "first")
 	if !local.deliver([]byte(`{"type":"response.interrupt","response_id":"first"}`)) {
 		t.Fatal("first frame was not claimed")
 	}
+	observeResponseCreatedForTest(local, "second")
 	if local.deliver([]byte(`{"type":"response.interrupt","response_id":"second"}`)) {
 		t.Fatal("second frame claimed while queue was full")
 	}
@@ -69,6 +77,7 @@ func TestResponsesLocalInterruptWebsocketOwnershipIsAtomic(t *testing.T) {
 	}
 	local.endWebsocketTurn()
 	local.begin(false)
+	observeResponseCreatedForTest(local, "r1")
 	if !local.deliver([]byte(`{"type":"response.interrupt","response_id":"r1"}`)) {
 		t.Fatal("frame not claimed for an HTTP turn")
 	}

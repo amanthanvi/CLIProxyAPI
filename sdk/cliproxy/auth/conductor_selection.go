@@ -740,6 +740,17 @@ func (m *Manager) SetSelector(selector Selector) {
 		m.mu.Unlock()
 		return
 	}
+	m.mu.Unlock()
+	// Keep in-flight results attached to the same live affinity state on reload.
+	if oldAffinity, ok := oldSelector.(*SessionAffinitySelector); ok {
+		if newAffinity, compatible := selector.(*SessionAffinitySelector); compatible {
+			oldAffinity.reconfigure(newAffinity)
+			newAffinity.Stop()
+			selector = oldAffinity
+			oldSelector = nil
+		}
+	}
+	m.mu.Lock()
 	m.selector = selector
 	m.mu.Unlock()
 
@@ -912,7 +923,9 @@ func (m *Manager) availableAuthsForRouteModelForRequest(ctx context.Context, aut
 			claudeCooldown, claudeSignals := claudeCooldownMetadataForAuths(ctx, auths, func(candidate *Auth) string {
 				return m.selectionModelForAuth(candidate, routeModel)
 			}, now, clientHeaders...)
-			return nil, newModelCooldownErrorForCandidates(routeModel, providerForError, resetIn, lastCandidateErr, claudeCooldown, claudeSignals)
+			err := newModelCooldownErrorForCandidates(routeModel, providerForError, resetIn, lastCandidateErr, claudeCooldown, claudeSignals)
+			err.claudeResetHeaders = claudeResetHeadersForPool(auths, func(candidate *Auth) string { return m.selectionModelForAuth(candidate, routeModel) }, earliest, now)
+			return nil, err
 		}
 		if unauthorizedCount == len(auths) && len(auths) > 0 {
 			terminalCause := latestUnauthorizedCandidateError(auths)
@@ -997,10 +1010,10 @@ func selectorContextForAvailableAuths(ctx context.Context, selector Selector, ro
 
 func (m *Manager) transientlyUnavailableSessionAffinityAuthIDs(ctx context.Context, selector Selector, affinityCandidates []*Auth, routeModel string, now time.Time, clientHeaders ...http.Header) map[string]struct{} {
 	affinity, ok := selector.(*SessionAffinitySelector)
-	if !ok || affinity == nil || (!affinity.rebindOnQuotaOnly && !affinity.rebindOnNever) || len(affinityCandidates) == 0 {
+	if !ok || !affinity.transientBindingsEnabled() || len(affinityCandidates) == 0 {
 		return nil
 	}
-	if _, weighted := affinity.fallback.(*WeightedRoundRobinSelector); weighted {
+	if affinity.weightedFallback() {
 		affinityCandidates = positiveWeightAuths(affinityCandidates)
 	}
 	var authIDs map[string]struct{}
@@ -1027,7 +1040,7 @@ func restoreModelCooldownErrorModel(err error, requestedModel string) error {
 	if !errors.As(err, &cooldownErr) || cooldownErr == nil || cooldownErr.model != "" {
 		return err
 	}
-	return newModelCooldownErrorForCandidates(
+	restored := newModelCooldownErrorForCandidates(
 		requestedModel,
 		cooldownErr.provider,
 		cooldownErr.resetIn,
@@ -1035,6 +1048,8 @@ func restoreModelCooldownErrorModel(err error, requestedModel string) error {
 		cooldownErr.claudeCooldown,
 		cooldownErr.claudeSignals,
 	)
+	restored.claudeResetHeaders = cooldownErr.claudeResetHeaders.Clone()
+	return restored
 }
 
 func latestUnauthorizedCandidateError(auths []*Auth) error {
@@ -1869,7 +1884,7 @@ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts c
 	}
 	eligibility := authSelectionEligibilityForRequest(ctx, opts)
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
-	if affinity, ok := m.Selector().(*SessionAffinitySelector); ok && affinity != nil && affinity.rebindOnNever {
+	if affinity, ok := m.Selector().(*SessionAffinitySelector); ok && affinity.neverRebindEnabled() {
 		var authErr *Error
 		if errors.As(err, &authErr) && authErr != nil && authErr.Code == "session_auth_unavailable" {
 			return 0, false
@@ -2323,10 +2338,10 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	registryRef := registry.GetGlobalRegistry()
 	targetKey := canonicalSchedulingProvider(provider)
 	affinitySelector, hasAffinity := selector.(*SessionAffinitySelector)
-	trackTransientAffinity := hasAffinity && affinitySelector != nil && (affinitySelector.rebindOnQuotaOnly || affinitySelector.rebindOnNever)
+	trackTransientAffinity := hasAffinity && affinitySelector.transientBindingsEnabled()
 	_, weighted := selector.(*WeightedRoundRobinSelector)
 	if hasAffinity && affinitySelector != nil {
-		_, weighted = affinitySelector.fallback.(*WeightedRoundRobinSelector)
+		weighted = affinitySelector.weightedFallback()
 	}
 	trackPinnedAccounting := pinnedAuthID != "" && weighted
 	var accountingCandidates, affinityCandidates []*Auth
@@ -2362,7 +2377,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 		}
 		candidates = append(candidates, candidate)
 	}
-	canInspectUnavailableAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnNever && pluginScheduler == nil
+	canInspectUnavailableAffinity := hasAffinity && affinitySelector.neverRebindEnabled() && pluginScheduler == nil
 	if len(candidates) == 0 && !canInspectUnavailableAffinity {
 		m.mu.RUnlock()
 		return nil, nil, &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -2473,6 +2488,11 @@ func (m *Manager) SelectAuth(ctx context.Context, provider, model string, opts c
 // SelectAuthExcluding selects one credential through the configured scheduling strategy
 // while excluding any credential IDs present in tried.
 func (m *Manager) SelectAuthExcluding(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, error) {
+	done, errDrain := m.beginAffinityExecution(false)
+	if errDrain != nil {
+		return nil, errDrain
+	}
+	defer done()
 	if m != nil && m.HomeEnabled() {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -2497,6 +2517,11 @@ func (m *Manager) MaxRetryCredentials() int {
 // SelectAuthByKind selects one credential of the required kind through the
 // configured scheduling strategy. Credentials of other kinds are skipped.
 func (m *Manager) SelectAuthByKind(ctx context.Context, provider, model, requiredKind string, opts cliproxyexecutor.Options) (*Auth, error) {
+	done, errDrain := m.beginAffinityExecution(false)
+	if errDrain != nil {
+		return nil, errDrain
+	}
+	defer done()
 	if m != nil && m.HomeEnabled() {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -2521,6 +2546,11 @@ func (m *Manager) SelectAuthByKind(ctx context.Context, provider, model, require
 
 // SelectAuthWithCredentialPolicy selects one local credential allowed by a fixed policy.
 func (m *Manager) SelectAuthWithCredentialPolicy(ctx context.Context, provider, model, policy string, opts cliproxyexecutor.Options) (*Auth, error) {
+	done, errDrain := m.beginAffinityExecution(false)
+	if errDrain != nil {
+		return nil, errDrain
+	}
+	defer done()
 	if m != nil && m.HomeEnabled() {
 		return nil, &Error{Code: "home_unavailable", Message: "legacy auth selection is unavailable while Home is enabled", HTTPStatus: http.StatusServiceUnavailable}
 	}
@@ -2811,10 +2841,10 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	}
 	registryRef := registry.GetGlobalRegistry()
 	affinitySelector, hasAffinity := selector.(*SessionAffinitySelector)
-	trackTransientAffinity := hasAffinity && affinitySelector != nil && (affinitySelector.rebindOnQuotaOnly || affinitySelector.rebindOnNever)
+	trackTransientAffinity := hasAffinity && affinitySelector.transientBindingsEnabled()
 	_, weighted := selector.(*WeightedRoundRobinSelector)
 	if hasAffinity && affinitySelector != nil {
-		_, weighted = affinitySelector.fallback.(*WeightedRoundRobinSelector)
+		weighted = affinitySelector.weightedFallback()
 	}
 	trackPinnedAccounting := pinnedAuthID != "" && weighted
 	var accountingCandidates, affinityCandidates []*Auth
@@ -2860,7 +2890,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 		}
 		candidates = append(candidates, candidate)
 	}
-	canInspectUnavailableAffinity := hasAffinity && affinitySelector != nil && affinitySelector.rebindOnNever && pluginScheduler == nil
+	canInspectUnavailableAffinity := hasAffinity && affinitySelector.neverRebindEnabled() && pluginScheduler == nil
 	if len(candidates) == 0 && !canInspectUnavailableAffinity {
 		m.mu.RUnlock()
 		return nil, nil, "", &Error{Code: "auth_not_found", Message: "no auth available"}
@@ -3126,8 +3156,7 @@ func selectorExcludesZeroWeight(selector Selector) bool {
 		return true
 	}
 	if affinity, ok := selector.(*SessionAffinitySelector); ok && affinity != nil {
-		_, weighted := affinity.fallback.(*WeightedRoundRobinSelector)
-		return weighted
+		return affinity.weightedFallback()
 	}
 	return false
 }

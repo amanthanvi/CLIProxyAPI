@@ -232,6 +232,8 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					outputItemsFallback = nil
 					pendingToolCallIDs = make(map[string]struct{})
 				}
+				// Correlate controls before downstream can react to this event.
+				opts.localInterrupt.observe(payloads[i])
 				collectResponsesWebsocketOutputItem(payloads[i], outputItemsByIndex, &outputItemsFallback)
 				if isResponsesWebsocketCompletionEvent(eventType) && (opts.preserveCompletionOutput == nil || !opts.preserveCompletionOutput()) {
 					payloads[i] = restoreResponsesWebsocketCompletionOutput(payloads[i], outputItemsByIndex, outputItemsFallback)

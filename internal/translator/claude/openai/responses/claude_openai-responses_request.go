@@ -143,7 +143,7 @@ func convertOpenAIResponsesRequestToClaude(ctx context.Context, modelName string
 	_ = outDoc.Set("stream", stream)
 
 	// Service Tier -> Speed
-	if st := root.Get("service_tier"); st.Type == ojson.String && st.String() == "priority" {
+	if st := root.Get("service_tier"); st.Type == ojson.String && (st.String() == "priority" || st.String() == "fast") {
 		_ = outDoc.Set("speed", "fast")
 	}
 

@@ -172,7 +172,7 @@ func (m *Manager) normalizeSessionAffinityNeverTerminalError(err error, provider
 		return err
 	}
 	affinity, ok := m.Selector().(*SessionAffinitySelector)
-	if !ok || affinity == nil || !affinity.rebindOnNever {
+	if !ok || !affinity.neverRebindEnabled() {
 		return err
 	}
 	if _, okBound := affinity.boundAuthForRequest(providers, model, opts); !okBound {
@@ -200,6 +200,11 @@ func isOpenAIImageExecutionOptions(opts cliproxyexecutor.Options) bool {
 }
 
 func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	done, errAdmission := m.beginAffinityExecution(false)
+	if errAdmission != nil {
+		return cliproxyexecutor.Response{}, errAdmission
+	}
+	defer done()
 	scope := m.beginInFlight("")
 	defer func() { scope.end() }()
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
@@ -275,13 +280,18 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 			}
 		}
 		lastErr = m.annotatePoolCooldownTerminalError(ctx, normalized, retryModel, opts, lastErr, selectionCooldownDeadline)
-		return cliproxyexecutor.Response{}, lastErr
+		return cliproxyexecutor.Response{}, m.certifyPoolQuotaExhaustion(ctx, normalized, retryModel, opts, lastErr)
 	}
 	return cliproxyexecutor.Response{}, &Error{Code: "auth_not_found", Message: "no auth available"}
 }
 
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+	done, errAdmission := m.beginAffinityExecution(false)
+	if errAdmission != nil {
+		return cliproxyexecutor.Response{}, errAdmission
+	}
+	defer done()
 	scope := m.beginInFlight("")
 	defer func() { scope.end() }()
 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
@@ -351,6 +361,11 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 // ExecuteStream performs a streaming execution using the configured selector and executor.
 // It supports multiple providers for the same model and round-robins the starting provider per model.
 func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (result *cliproxyexecutor.StreamResult, err error) {
+	done, errAdmission := m.beginAffinityExecution(false)
+	if errAdmission != nil {
+		return nil, errAdmission
+	}
+	defer done()
 	scope := m.beginInFlight("")
 	defer func() {
 		if scope != nil {
@@ -460,6 +475,7 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 			lastErr = m.annotatePoolCooldownTerminalError(ctx, normalized, retryModel, opts, lastErr, selectionCooldownDeadline)
 		}
 		var bootstrapErr *streamBootstrapError
+		lastErr = m.certifyPoolQuotaExhaustion(ctx, normalized, retryModel, opts, lastErr)
 		if errors.As(lastErr, &bootstrapErr) && bootstrapErr != nil {
 			return streamErrorResult(bootstrapErr.Headers(), lastErr), nil
 		}

@@ -47,13 +47,13 @@ func TestParseConfigBytes_ServerKVStoreV8AndLegacy(t *testing.T) {
 func TestParseConfigBytes_ServerKVStoreDefaultsAndEffectivePath(t *testing.T) {
 	wantDefaultAuthPath := filepath.Join(DefaultAuthDir, DefaultKVStorePath)
 
-	// Omitted kv-store section defaults to Disabled=false and Path="" (resolving to <auth-dir>/kv.db).
+	// Omitted kv-store section disables persistence without changing path resolution.
 	omittedCfg, errOmitted := ParseConfigBytes([]byte("config-version: 8\nserver:\n  port: 8317\n"))
 	if errOmitted != nil {
 		t.Fatalf("ParseConfigBytes(omitted) error = %v", errOmitted)
 	}
-	if omittedCfg.KVStore.Disabled || omittedCfg.KVStore.Path != "" {
-		t.Fatalf("omittedCfg.KVStore = %+v, want {Disabled:false Path:\"\"}", omittedCfg.KVStore)
+	if !omittedCfg.KVStore.Disabled || omittedCfg.KVStore.Enabled() || omittedCfg.KVStore.Path != "" {
+		t.Fatalf("omittedCfg.KVStore = %+v, want disabled persistence and empty path", omittedCfg.KVStore)
 	}
 	if got := omittedCfg.KVStore.EffectivePath(); got != DefaultKVStorePath {
 		t.Fatalf("omittedCfg.KVStore.EffectivePath() = %q, want %q", got, DefaultKVStorePath)
@@ -125,5 +125,92 @@ func TestParseConfigBytes_ServerKVStoreDefaultsAndEffectivePath(t *testing.T) {
 	}
 	if got := (KVStoreConfig{Path: " ./custom/kv.db "}).EffectivePathForAuthDir("/ignored"); got != "./custom/kv.db" {
 		t.Fatalf("EffectivePathForAuthDir(custom) = %q, want %q", got, "./custom/kv.db")
+	}
+}
+
+func TestKVStoreConfig_ExplicitOptInAndRoundTrips(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		raw     string
+		enabled bool
+	}{
+		{name: "omitted", raw: "config-version: 8\nserver:\n  port: 8317\n"},
+		{name: "null", raw: "config-version: 8\nserver:\n  kv-store: null\n"},
+		{name: "empty section", raw: "config-version: 8\nserver:\n  kv-store: {}\n"},
+		{name: "blank path", raw: "config-version: 8\nserver:\n  kv-store:\n    path: '  '\n"},
+		{name: "explicit false", raw: "config-version: 8\nserver:\n  kv-store:\n    disabled: false\n", enabled: true},
+		{name: "explicit true", raw: "config-version: 8\nserver:\n  kv-store:\n    disabled: true\n"},
+		{name: "disabled overrides path", raw: "config-version: 8\nserver:\n  kv-store:\n    disabled: true\n    path: ./disabled.db\n"},
+		{name: "legacy path", raw: "kv-store:\n  path: ./opt-in.db\n", enabled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := ParseConfigBytes([]byte(tc.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.KVStore.Enabled(); got != tc.enabled {
+				t.Fatalf("Enabled() = %t, want %t", got, tc.enabled)
+			}
+			if got := cfg.CloneForRuntime().KVStore.Enabled(); got != tc.enabled {
+				t.Fatalf("clone Enabled() = %t, want %t", got, tc.enabled)
+			}
+			encoded, err := yaml.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reloaded, err := ParseConfigBytes(encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := reloaded.KVStore.Enabled(); got != tc.enabled {
+				t.Fatalf("YAML round trip Enabled() = %t, want %t", got, tc.enabled)
+			}
+			encodedJSON, err := cfg.KVStore.MarshalJSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decodedJSON KVStoreConfig
+			if err := decodedJSON.UnmarshalJSON(encodedJSON); err != nil {
+				t.Fatal(err)
+			}
+			if got := decodedJSON.Enabled(); got != tc.enabled {
+				t.Fatalf("JSON round trip Enabled() = %t, want %t", got, tc.enabled)
+			}
+		})
+	}
+	var zero KVStoreConfig
+	if zero.Enabled() {
+		t.Fatal("zero-value SDK config enabled persistence")
+	}
+	encoded, err := zero.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := zero.UnmarshalJSON(encoded); err != nil || zero.Enabled() {
+		t.Fatalf("zero-value JSON round trip enabled persistence: %v", err)
+	}
+}
+
+func TestKVStoreConfigJSONOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		raw     string
+		enabled bool
+	}{
+		{raw: `{}`},
+		{raw: `null`},
+		{raw: `{"path":"  "}`},
+		{raw: `{"disabled":false}`, enabled: true},
+		{raw: `{"path":"./opt-in.db"}`, enabled: true},
+		{raw: `{"disabled":true,"path":"./disabled.db"}`},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			var cfg KVStoreConfig
+			if err := cfg.UnmarshalJSON([]byte(tc.raw)); err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Enabled(); got != tc.enabled {
+				t.Fatalf("Enabled() = %t, want %t", got, tc.enabled)
+			}
+		})
 	}
 }
