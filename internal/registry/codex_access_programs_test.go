@@ -59,6 +59,7 @@ func TestCodexAccessProgramsSourceSelectionRevokesPriorPublication(t *testing.T)
 	previousSelected := codexClientCatalogStore.accessProgramsSelectedSource
 	previousAccounts := codexClientCatalogStore.accessProgramAccounts
 	previousPrograms := codexClientCatalogStore.accessProgramsByRoute
+	previousTiers := codexClientCatalogStore.serviceTiersByModel
 	codexClientCatalogStore.mu.Unlock()
 	t.Cleanup(func() {
 		codexClientCatalogStore.mu.Lock()
@@ -70,6 +71,7 @@ func TestCodexAccessProgramsSourceSelectionRevokesPriorPublication(t *testing.T)
 		codexClientCatalogStore.accessProgramsSelectedSource = previousSelected
 		codexClientCatalogStore.accessProgramAccounts = previousAccounts
 		codexClientCatalogStore.accessProgramsByRoute = previousPrograms
+		codexClientCatalogStore.serviceTiersByModel = previousTiers
 		codexClientCatalogStore.mu.Unlock()
 	})
 	source := trustedCodexAccessProgramsSource

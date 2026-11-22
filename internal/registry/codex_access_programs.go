@@ -66,6 +66,7 @@ func selectCodexAccessProgramsSource(source string) {
 	if source != codexClientCatalogStore.accessProgramsSelectedSource {
 		codexClientCatalogStore.accessProgramAccounts = nil
 		codexClientCatalogStore.accessProgramsByRoute = nil
+		codexClientCatalogStore.serviceTiersByModel = nil
 	}
 	codexClientCatalogStore.accessProgramsSelectedSource = source
 }

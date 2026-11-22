@@ -351,6 +351,8 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 
 // bindNativeCodexAccessPrograms runs before aliases, plugin models and prefixes,
 // so a renamed or synthesized row cannot acquire a native upstream model binding.
+// Speed metadata shares this identity proof; Cyber Access separately rejects
+// the presentation-header overrides permitted here.
 func bindNativeCodexAccessPrograms(a *coreauth.Auth, models []*ModelInfo) []*ModelInfo {
 	if a == nil || a.Disabled || a.Provider != "codex" || a.AuthKind() != coreauth.AuthKindOAuth ||
 		coreauth.IsCodexUseSIWC(a) || coreauth.IsPluginVirtualAuth(a) {
@@ -379,7 +381,7 @@ func bindNativeCodexAccessPrograms(a *coreauth.Auth, models []*ModelInfo) []*Mod
 	for i, model := range models {
 		out[i] = model
 		if model == nil || model.ID == "" || strings.Contains(model.ID, "/") || model.UserDefined ||
-			model.IsCompat || (model.Config != nil && len(model.Config.OverrideHeader) != 0) {
+			model.IsCompat || !registry.NativeCodexIdentityHeaders(model.Config) {
 			continue
 		}
 		clone := cloneModelInfoForCatalogRoute(model)

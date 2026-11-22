@@ -27,7 +27,8 @@ func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) ma
 	}
 	modelRegistry := registry.GetGlobalRegistry()
 	programSelectionPreserved := h != nil && h.BaseAPIHandler != nil && h.AuthManager != nil && h.AuthManager.PreservesCodexAccessProgramSelection()
-	return codexmodels.BuildResponseForLocalRegistry(h.Models(), modelRegistry, applyPatchCapabilityForModel, toolSearchCapabilityForModel, programSelectionPreserved, optimizeMultiAgentV2, version)
+	tierSelectionPreserved := h != nil && h.BaseAPIHandler != nil && h.AuthManager != nil && h.AuthManager.PreservesCodexServiceTierSelection()
+	return codexmodels.BuildResponseForLocalRegistry(h.Models(), modelRegistry, applyPatchCapabilityForModel, toolSearchCapabilityForModel, programSelectionPreserved, tierSelectionPreserved, optimizeMultiAgentV2, version)
 }
 
 // CodexClientModelsResponse builds a Codex client model response.

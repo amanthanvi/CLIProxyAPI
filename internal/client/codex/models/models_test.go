@@ -1853,7 +1853,7 @@ func TestLocalCodexCatalogPublishesOnlyExactAttestedRoutes(t *testing.T) {
 			return []string{"standard", "daybreak_blue"}
 		}
 		return nil
-	}, false, "")
+	}, nil, false, "")
 	if !slices.Equal(queried, []string{"codex/first-party", "codex/not-offered"}) {
 		t.Fatalf("unexpected route lookups: %v", queried)
 	}

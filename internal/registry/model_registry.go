@@ -365,6 +365,30 @@ func responsesWebSearchProviderPathSupport(provider string) *bool {
 // CodexAccessProgramsAttested requires every registered route for this exact
 // public ID to be a bound native row covered by the publisher's account cohort.
 func (r *ModelRegistry) CodexAccessProgramsAttested(modelID string, cohort map[string]struct{}) bool {
+	return r.codexNativeIdentityAttested(modelID, cohort, false)
+}
+
+// CodexServiceTiersAttested permits only the native client-identity headers
+// supplied by the built-in Codex plan catalog, not arbitrary header overrides.
+func (r *ModelRegistry) CodexServiceTiersAttested(modelID string, cohort map[string]struct{}) bool {
+	return r.codexNativeIdentityAttested(modelID, cohort, true)
+}
+
+// NativeCodexIdentityHeaders permits the two presentation headers in native
+// Codex plan rows. Authorization, account, host and unknown headers fail closed.
+func NativeCodexIdentityHeaders(config *ModelConfig) bool {
+	if config == nil {
+		return true
+	}
+	for header := range config.OverrideHeader {
+		if !strings.EqualFold(header, "User-Agent") && !strings.EqualFold(header, "originator") {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *ModelRegistry) codexNativeIdentityAttested(modelID string, cohort map[string]struct{}, allowIdentityHeaders bool) bool {
 	if r == nil || len(cohort) == 0 || !strings.HasPrefix(modelID, "codex/") {
 		return false
 	}
@@ -381,7 +405,8 @@ func (r *ModelRegistry) CodexAccessProgramsAttested(modelID string, cohort map[s
 				info.CodexAccessProgramModelID == "" ||
 				modelID != "codex/"+info.CodexAccessProgramModelID ||
 				info.CodexAccessProgramAccountHash == "" ||
-				(info.Config != nil && len(info.Config.OverrideHeader) != 0) {
+				(info.Config != nil && len(info.Config.OverrideHeader) != 0 &&
+					(!allowIdentityHeaders || !NativeCodexIdentityHeaders(info.Config))) {
 				return false
 			}
 			if _, ok := cohort[info.CodexAccessProgramAccountHash]; !ok {

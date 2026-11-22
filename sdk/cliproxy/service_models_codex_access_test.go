@@ -142,3 +142,22 @@ func TestBindNativeCodexAccessPrograms(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeCodexIdentityBindingPermitsOnlyPresetPresentationHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		header string
+		want   bool
+	}{
+		{"User-Agent", true}, {"user-agent", true}, {"originator", true},
+		{"Authorization", false}, {"ChatGPT-Account-ID", false}, {"Host", false}, {"X-Custom", false},
+	} {
+		model := &ModelInfo{ID: "native-model", Config: &registry.ModelConfig{OverrideHeader: map[string]string{tc.header: "synthetic"}}}
+		rows := bindNativeCodexAccessPrograms(testCodexAccessAuth(), []*ModelInfo{model})
+		if got := rows[0].CodexAccessProgramModelID != ""; got != tc.want {
+			t.Fatalf("header %s binding = %t, want %t", tc.header, got, tc.want)
+		}
+		if model.CodexAccessProgramModelID != "" {
+			t.Fatal("mutated shared native model")
+		}
+	}
+}
