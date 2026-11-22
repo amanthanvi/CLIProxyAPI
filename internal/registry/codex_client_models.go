@@ -20,11 +20,15 @@ type codexClientModelsPayload struct {
 }
 
 type codexClientModelsStore struct {
-	mu                sync.RWMutex
-	data              []byte
-	revision          uint64
-	responsesLiteMap  map[string]bool
-	thinkingLevelsMap map[string][]string
+	mu                           sync.RWMutex
+	data                         []byte
+	revision                     uint64
+	responsesLiteMap             map[string]bool
+	thinkingLevelsMap            map[string][]string
+	accessProgramsSource         string
+	accessProgramsSelectedSource string
+	accessProgramAccounts        map[string]struct{}
+	accessProgramsByRoute        map[string][]string
 }
 
 var codexClientCatalogStore = &codexClientModelsStore{}
@@ -91,8 +95,12 @@ func loadCodexClientModelsFromBytes(data []byte, source string) (bool, error) {
 	}
 
 	cloned := append([]byte(nil), data...)
+	accounts, programs := parseCodexAccessPrograms(data, source)
 	codexClientCatalogStore.mu.Lock()
 	defer codexClientCatalogStore.mu.Unlock()
+	codexClientCatalogStore.accessProgramsSource = source
+	codexClientCatalogStore.accessProgramAccounts = accounts
+	codexClientCatalogStore.accessProgramsByRoute = programs
 	if bytes.Equal(codexClientCatalogStore.data, cloned) {
 		return false, nil
 	}

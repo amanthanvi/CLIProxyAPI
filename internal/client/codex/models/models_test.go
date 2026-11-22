@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -1772,7 +1773,8 @@ func assertCodexNullableFieldCleared(t *testing.T, entry map[string]any, key str
 	}
 }
 
-func TestCodexClientModelsResponse_DoesNotLeakResponsesLiteOrCodeModeToNonCodexRoutes_Issue6769(t *testing.T) {
+func useCodexClientTemplateSnapshot(t *testing.T, snapshot []byte) {
+	t.Helper()
 	_, revision := registry.GetCodexClientModelsSnapshot()
 	codexClientModelTemplatesMu.Lock()
 	previousLoaded := codexClientModelTemplatesLoaded
@@ -1791,7 +1793,87 @@ func TestCodexClientModelsResponse_DoesNotLeakResponsesLiteOrCodeModeToNonCodexR
 		codexClientModelTemplatesErr = previousErr
 		codexClientModelTemplatesMu.Unlock()
 	})
+	if _, _, errLoad := loadCodexClientModelTemplatesSnapshot(snapshot, revision); errLoad != nil {
+		t.Fatalf("loadCodexClientModelTemplatesSnapshot: %v", errLoad)
+	}
+}
 
+func TestCodexClientModelsResponse_DoesNotInheritAccountAccessPrograms(t *testing.T) {
+	useCodexClientTemplateSnapshot(t, []byte(`{"codex_access_program_account_hashes":["private-cohort"],"models":[{
+		"slug":"shared-model","display_name":"Shared display",
+		"codex_access_program_account_hashes":["private-cohort"],
+		"codex_access_programs_by_route":{"codex/shared-model":{"cyber":["standard","daybreak_blue"]}},
+		"available_access_programs":{"cyber":["standard","daybreak_blue"]}
+	}]}`))
+	available := []map[string]any{
+		{"id": "shared-model"}, {"id": "codex/shared-model"}, {"id": "zen/shared-model"},
+		{"id": "go/shared-model"}, {"id": "custom-fallback"},
+	}
+	for _, tc := range []struct {
+		name      string
+		providers ProvidersForModelFunc
+	}{
+		{"no route metadata", nil},
+		{"codex executor including API keys", func(string) []string { return []string{"codex"} }},
+		{"mixed executors", func(string) []string { return []string{"codex", "openai-compatibility"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := BuildResponseForClient(available, tc.providers, false, "")
+			body, err := MarshalCompact(result)
+			if err != nil || bytes.Contains(body, []byte("codex_access_program")) || bytes.Contains(body, []byte("private-cohort")) {
+				t.Fatal("public catalog failed serialization or exposed private provenance")
+			}
+			rows := result["models"].([]map[string]any)
+			if len(rows) != len(available) {
+				t.Fatalf("got %d rows, want %d", len(rows), len(available))
+			}
+			for _, entry := range rows {
+				slug := stringModelValue(entry, "slug")
+				if _, ok := entry["available_access_programs"]; ok {
+					t.Errorf("%s inherited account-specific access programs", slug)
+				}
+				if slug != "custom-fallback" && stringModelValue(entry, "display_name") != "Shared display" {
+					t.Errorf("%s lost its template display name", slug)
+				}
+			}
+		})
+	}
+}
+
+func TestLocalCodexCatalogPublishesOnlyExactAttestedRoutes(t *testing.T) {
+	useCodexClientTemplateSnapshot(t, []byte(`{"models":[{"slug":"first-party"},{"slug":"not-offered"}]}`))
+	inputs := []map[string]any{
+		{"id": "codex/first-party"}, {"id": "codex/not-offered"}, {"id": "codex/fallback"},
+		{"id": "first-party"}, {"id": "zen/first-party"}, {"id": "go/first-party"},
+	}
+	var queried []string
+	rows := buildCodexClientModelsWithToolCapabilities(inputs, nil, nil, nil, nil, nil, func(id string) []string {
+		queried = append(queried, id)
+		if id == "codex/first-party" {
+			return []string{"standard", "daybreak_blue"}
+		}
+		return nil
+	}, false, "")
+	if !slices.Equal(queried, []string{"codex/first-party", "codex/not-offered"}) {
+		t.Fatalf("unexpected route lookups: %v", queried)
+	}
+	if len(rows) != len(inputs) {
+		t.Fatalf("got %d rows for %d inputs", len(rows), len(inputs))
+	}
+	for _, row := range rows {
+		id := stringModelValue(row, "slug")
+		programs, ok := row["available_access_programs"]
+		if id == "codex/first-party" {
+			if !ok || !slices.Equal(programs.(map[string]any)["cyber"].([]string), []string{"standard", "daybreak_blue"}) {
+				t.Fatalf("%s lost its observed options", id)
+			}
+		} else if ok {
+			t.Errorf("%s unexpectedly advertises an access program", id)
+		}
+	}
+}
+
+func TestCodexClientModelsResponse_DoesNotLeakResponsesLiteOrCodeModeToNonCodexRoutes_Issue6769(t *testing.T) {
 	// Simulate a post-retirement catalog where the first/default template (gpt-6.1-sol)
 	// advertises code_mode_only, use_responses_lite, and supports_reasoning_effort_updates.
 	snapshot := []byte(`{"models":[{
@@ -1816,9 +1898,7 @@ func TestCodexClientModelsResponse_DoesNotLeakResponsesLiteOrCodeModeToNonCodexR
 		"upgrade":null,
 		"availability_nux":{"message":"nux"}
 	}]}`)
-	if _, _, errLoad := loadCodexClientModelTemplatesSnapshot(snapshot, revision); errLoad != nil {
-		t.Fatalf("loadCodexClientModelTemplatesSnapshot: %v", errLoad)
-	}
+	useCodexClientTemplateSnapshot(t, snapshot)
 
 	available := []map[string]any{
 		{"id": "gpt-6.1-sol"},

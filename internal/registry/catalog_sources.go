@@ -21,17 +21,26 @@ const embeddedCatalogSource = "embed"
 // Cancellation saves work; the generation check also protects against readers
 // that finish after cancellation (including local file reads).
 type catalogUpdater struct {
-	mu              sync.Mutex
-	source          string
-	generation      uint64
-	requestSeq      uint64
-	publishedSeq    uint64
-	cancel          context.CancelFunc
-	ctx             context.Context
-	parentDone      <-chan struct{}
-	fetch           func(context.Context, string) ([]byte, error)
-	fetchWithSource func(context.Context, string) ([]byte, string, error)
-	publish         func([]byte) ([]string, error)
+	mu                sync.Mutex
+	source            string
+	generation        uint64
+	requestSeq        uint64
+	publishedSeq      uint64
+	cancel            context.CancelFunc
+	ctx               context.Context
+	parentDone        <-chan struct{}
+	fetch             func(context.Context, string) ([]byte, error)
+	fetchWithSource   func(context.Context, string) ([]byte, string, error)
+	publish           func([]byte) ([]string, error)
+	publishWithSource func([]byte, string, string) ([]string, error)
+	selectSource      func(string)
+}
+
+func (u *catalogUpdater) publishCatalog(data []byte, configuredSource, resolvedSource string) ([]string, error) {
+	if u.publishWithSource != nil {
+		return u.publishWithSource(data, configuredSource, resolvedSource)
+	}
+	return u.publish(data)
 }
 
 func (u *catalogUpdater) fetchCatalog(ctx context.Context, source string) ([]byte, string, error) {
@@ -54,6 +63,9 @@ func (u *catalogUpdater) configure(ctx context.Context, source string) {
 	u.generation++
 	u.publishedSeq = 0
 	u.source = source
+	if u.selectSource != nil {
+		u.selectSource(source)
+	}
 	refreshCtx, cancel := context.WithCancel(ctx)
 	u.cancel = cancel
 	u.ctx = refreshCtx
@@ -105,7 +117,7 @@ func (u *catalogUpdater) refresh(ctx context.Context, source string, generation 
 	seq := u.requestSeq
 	u.mu.Unlock()
 
-	data, _, errFetch := u.fetchCatalog(ctx, source)
+	data, resolvedSource, errFetch := u.fetchCatalog(ctx, source)
 	if errFetch != nil {
 		if ctx.Err() == nil {
 			log.Warn("model catalog refresh failed; keeping last valid catalog")
@@ -117,7 +129,7 @@ func (u *catalogUpdater) refresh(ctx context.Context, source string, generation 
 		u.mu.Unlock()
 		return
 	}
-	changed, errPublish := u.publish(data)
+	changed, errPublish := u.publishCatalog(data, source, resolvedSource)
 	if errPublish == nil {
 		u.publishedSeq = seq
 	}
@@ -139,6 +151,9 @@ func (u *catalogUpdater) refreshOnDemand(ctx context.Context, fallbackSource str
 		}
 	}
 	generation := u.generation
+	if u.selectSource != nil {
+		u.selectSource(source)
+	}
 	var watchCtx context.Context
 	if updaterActive {
 		watchCtx = u.ctx
@@ -218,7 +233,7 @@ func (u *catalogUpdater) refreshOnDemand(ctx context.Context, fallbackSource str
 			Refreshed: true,
 		}, nil
 	}
-	changed, errPublish := u.publish(data)
+	changed, errPublish := u.publishCatalog(data, source, resolvedSource)
 	if errPublish == nil {
 		u.publishedSeq = seq
 	}
@@ -355,8 +370,13 @@ var generalCatalogUpdater = &catalogUpdater{
 }
 var codexCatalogUpdater = &catalogUpdater{
 	fetchWithSource: dynamicCatalogFetcherWithSource(embeddedCodexClientModelsJSON, &codexClientModelsURLs, ValidateCodexClientModelsJSON),
-	publish: func(data []byte) ([]string, error) {
-		_, errLoad := loadCodexClientModelsFromBytes(data, "catalog")
+	selectSource:    selectCodexAccessProgramsSource,
+	publishWithSource: func(data []byte, configuredSource, resolvedSource string) ([]string, error) {
+		source := ""
+		if configuredSource == trustedCodexAccessProgramsSource && configuredSource == resolvedSource {
+			source = configuredSource
+		}
+		_, errLoad := loadCodexClientModelsFromBytes(data, source)
 		return nil, errLoad
 	},
 }

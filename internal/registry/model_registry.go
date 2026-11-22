@@ -43,6 +43,10 @@ type ModelInfo struct {
 	// MetadataModelID identifies the canonical model used to resolve client metadata.
 	// It is internal and must not be exposed in model-list responses.
 	MetadataModelID string `json:"-"`
+	// CodexAccessProgramModelID and AccountHash bind native plan rows to the
+	// original upstream slug and credential observed by the private publisher.
+	CodexAccessProgramModelID     string `json:"-"`
+	CodexAccessProgramAccountHash string `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
@@ -356,6 +360,37 @@ func responsesWebSearchProviderPathSupport(provider string) *bool {
 		}
 		return nil
 	}
+}
+
+// CodexAccessProgramsAttested requires every registered route for this exact
+// public ID to be a bound native row covered by the publisher's account cohort.
+func (r *ModelRegistry) CodexAccessProgramsAttested(modelID string, cohort map[string]struct{}) bool {
+	if r == nil || len(cohort) == 0 || !strings.HasPrefix(modelID, "codex/") {
+		return false
+	}
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	found := false
+	for clientID, modelIDs := range r.clientModels {
+		for _, registeredID := range modelIDs {
+			if registeredID != modelID {
+				continue
+			}
+			info := r.clientModelInfos[clientID][registeredID]
+			if r.clientProviders[clientID] != "codex" || info == nil ||
+				info.CodexAccessProgramModelID == "" ||
+				modelID != "codex/"+info.CodexAccessProgramModelID ||
+				info.CodexAccessProgramAccountHash == "" ||
+				(info.Config != nil && len(info.Config.OverrideHeader) != 0) {
+				return false
+			}
+			if _, ok := cohort[info.CodexAccessProgramAccountHash]; !ok {
+				return false
+			}
+			found = true
+		}
+	}
+	return found
 }
 
 func boolPointer(value bool) *bool {
