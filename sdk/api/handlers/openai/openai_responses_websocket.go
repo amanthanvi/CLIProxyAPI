@@ -1128,8 +1128,21 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				if coreauth.IsContinuityTerminatedError(errMsg.Error) {
 					return false
 				}
-				if !nativeWebsocketPassthrough || !pinnedAuthAttempted {
+				if !nativeWebsocketPassthrough {
 					return false
+				}
+				if !pinnedAuthAttempted {
+					// The pin cooled between validation and selection. Require a
+					// fresh full turn; no continuation was sent to the upstream.
+					if !requestRequiresCurrentUpstreamWebsocket || pinnedAuthID == "" ||
+						selectedAuthObserved || executionAuthID != pinnedAuthID || downstreamCommitted.Load() ||
+						!shouldReplayResponsesWebsocketPinnedAuthFailure(errMsg) || errMsg.DirectResponse ||
+						responsesWebsocketErrorStatus(errMsg) != http.StatusTooManyRequests ||
+						!coreauth.IsSelectorModelCooldown(errMsg.Error) {
+						return false
+					}
+					replayedPinnedAuthFailure = true
+					return true
 				}
 				if !shouldReplayResponsesWebsocketPinnedAuthFailure(errMsg) &&
 					!isResponsesWebsocketQuotaOrCooldownError(errMsg.Error) {

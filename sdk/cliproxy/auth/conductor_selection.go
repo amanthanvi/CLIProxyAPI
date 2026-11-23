@@ -1105,6 +1105,7 @@ func restoreModelCooldownErrorModel(err error, requestedModel string) error {
 		cooldownErr.claudeCooldown,
 		cooldownErr.claudeSignals,
 	)
+	restored.selectorGenerated = cooldownErr.selectorGenerated
 	restored.claudeResetHeaders = cooldownErr.claudeResetHeaders.Clone()
 	return restored
 }

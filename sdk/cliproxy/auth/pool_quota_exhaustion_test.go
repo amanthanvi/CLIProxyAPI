@@ -15,6 +15,17 @@ import (
 
 type poolQuotaTestError struct{}
 
+func TestSelectorCooldownProvenanceSurvivesModelRestoration(t *testing.T) {
+	caller := NewModelCooldownError("", "codex", time.Hour)
+	if IsSelectorModelCooldown(caller) || IsSelectorModelCooldown(restoreModelCooldownErrorModel(caller, "synthetic")) {
+		t.Fatal("caller-created cooldown acquired selector provenance")
+	}
+	generated := newModelCooldownError("", "codex", time.Hour)
+	if !IsSelectorModelCooldown(generated) || !IsSelectorModelCooldown(restoreModelCooldownErrorModel(generated, "synthetic")) {
+		t.Fatal("local cooldown lost selector provenance")
+	}
+}
+
 func (*poolQuotaTestError) Error() string              { return "synthetic quota" }
 func (*poolQuotaTestError) StatusCode() int            { return 429 }
 func (*poolQuotaTestError) RetryAfter() *time.Duration { d := time.Hour; return &d }
