@@ -92,6 +92,31 @@ func TestHostPickAuthPanicFusesAndFallsBack(t *testing.T) {
 	if !host.isPluginFused("scheduler") {
 		t.Fatal("scheduler plugin was not fused after panic")
 	}
+	if host.HasScheduler() || !host.HasConfiguredScheduler() {
+		t.Fatal("a fused scheduler must remain configured but not selectable")
+	}
+}
+
+func TestHostHasConfiguredSchedulerUsesPublishedCapabilities(t *testing.T) {
+	if New().HasConfiguredScheduler() {
+		t.Fatal("an empty host is not a configured scheduler")
+	}
+	host := newHostWithRecords(capabilityRecord{
+		id: "non-scheduler",
+	})
+	if host.HasConfiguredScheduler() {
+		t.Fatal("unrelated plugin capabilities are not schedulers")
+	}
+	host = newHostWithRecords(capabilityRecord{
+		id: "scheduler",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{Scheduler: schedulerFunc(func(context.Context, pluginapi.SchedulerPickRequest) (pluginapi.SchedulerPickResponse, error) {
+			t.Fatal("checking scheduler capabilities must not execute plugin code")
+			return pluginapi.SchedulerPickResponse{}, nil
+		})}},
+	})
+	if !host.HasConfiguredScheduler() {
+		t.Fatal("the published scheduler must be reported")
+	}
 }
 
 func TestHostPickAuthUnhandledCallsLowerPriorityScheduler(t *testing.T) {

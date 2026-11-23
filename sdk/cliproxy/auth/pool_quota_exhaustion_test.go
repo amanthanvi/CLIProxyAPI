@@ -267,8 +267,15 @@ func TestPoolQuotaExhaustionCanonicalAffinityAliasAndPreservation(t *testing.T) 
 	}
 }
 
+type poolQuotaConfiguredScheduler struct {
+	fakePluginScheduler
+	configured bool
+}
+
+func (s *poolQuotaConfiguredScheduler) HasConfiguredScheduler() bool { return s.configured }
+
 func TestPoolQuotaExhaustionConservativeGuards(t *testing.T) {
-	for _, name := range []string{"custom-selector", "plugin-scheduler", "request-scoped", "safety-stop", "missing-executor", "canceled", "mixed-credential-model", "zero-eligible", "eligibility-filter"} {
+	for _, name := range []string{"custom-selector", "plugin-scheduler", "opaque-inactive-scheduler", "configured-scheduler", "request-scoped", "safety-stop", "missing-executor", "canceled", "mixed-credential-model", "zero-eligible", "eligibility-filter"} {
 		t.Run(name, func(t *testing.T) {
 			m, ids := newPoolQuotaTestManager(t)
 			parkPoolQuotaTestManager(m, ids)
@@ -282,6 +289,10 @@ func TestPoolQuotaExhaustionConservativeGuards(t *testing.T) {
 				m.SetSelector(custom)
 			case "plugin-scheduler":
 				m.SetPluginScheduler(&fakePluginScheduler{})
+			case "opaque-inactive-scheduler":
+				m.SetPluginScheduler(&inactivePluginScheduler{})
+			case "configured-scheduler":
+				m.SetPluginScheduler(&poolQuotaConfiguredScheduler{configured: true})
 			case "request-scoped":
 				cause = &Error{Code: ErrorCodeRequestScoped, HTTPStatus: 429, Message: "synthetic caller fault"}
 			case "safety-stop":

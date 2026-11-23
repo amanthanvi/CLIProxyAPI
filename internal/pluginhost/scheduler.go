@@ -66,6 +66,17 @@ func (h *Host) HasScheduler() bool {
 	return h.schedulerRecord() != nil
 }
 
+// HasConfiguredScheduler checks the published capability snapshot without
+// locks or plugin calls. A fused scheduler still counts as configured.
+func (h *Host) HasConfiguredScheduler() bool {
+	for _, record := range h.Snapshot().records {
+		if record.plugin.Capabilities.Scheduler != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Host) SchedulerWantsAcrossPriorities() bool {
 	if h == nil {
 		return false
