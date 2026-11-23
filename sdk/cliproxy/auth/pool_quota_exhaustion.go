@@ -66,8 +66,7 @@ func (m *Manager) certifyPoolQuotaExhaustion(ctx context.Context, providers []st
 	reg := registry.GetGlobalRegistry()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	// Plugin admission policies are outside the built-in selector proof.
-	if m.pluginScheduler != nil {
+	if !poolQuotaSupportsScheduler(m.pluginScheduler) {
 		return cause
 	}
 	knownSelector, positiveWeight := poolQuotaSelectorSemantics(m.selector)
@@ -132,10 +131,21 @@ func (m *Manager) certifyPoolQuotaExhaustion(ctx context.Context, providers []st
 			return cause
 		}
 	}
-	if !details.EarliestAdmission.After(time.Now()) {
+	if !poolQuotaSupportsScheduler(m.pluginScheduler) || !details.EarliestAdmission.After(time.Now()) {
 		return cause
 	}
 	return &poolQuotaExhaustionError{cause: cause, details: details}
+}
+
+func poolQuotaSupportsScheduler(scheduler PluginScheduler) bool {
+	if scheduler == nil {
+		return true
+	}
+	// Builder installs a plugin host even when it has no scheduler. Only
+	// accept an explicit published-capability check safe under m.mu: no locks,
+	// callbacks, or plugin calls. Unknown adapters are outside the proof.
+	state, ok := scheduler.(interface{ HasConfiguredScheduler() bool })
+	return ok && !state.HasConfiguredScheduler()
 }
 
 func poolQuotaSelectorSemantics(selector Selector) (known, positiveWeight bool) {

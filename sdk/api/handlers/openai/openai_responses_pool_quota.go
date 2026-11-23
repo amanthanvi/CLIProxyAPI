@@ -18,18 +18,23 @@ type responsesPoolQuotaError struct {
 func (e *responsesPoolQuotaError) Error() string { return e.body }
 func (e *responsesPoolQuotaError) Unwrap() error { return e.cause }
 
+func (h *OpenAIResponsesAPIHandler) writeInitialResponsesError(c *gin.Context, msg *interfaces.ErrorMessage) {
+	if !c.Writer.Written() {
+		msg = nativeResponsesPoolQuotaError(msg)
+	}
+	h.WriteErrorResponse(c, msg)
+}
+
 // Only the manager can certify exhaustion of the full eligible route pool.
 // A selector's cooldown error may instead describe a pinned or tried subset.
-func (h *OpenAIResponsesAPIHandler) writeInitialResponsesError(c *gin.Context, msg *interfaces.ErrorMessage) {
-	if msg == nil || msg.DirectResponse || c.Writer.Written() || msg.StatusCode != http.StatusTooManyRequests ||
+func nativeResponsesPoolQuotaError(msg *interfaces.ErrorMessage) *interfaces.ErrorMessage {
+	if msg == nil || msg.DirectResponse || msg.StatusCode != http.StatusTooManyRequests ||
 		clienterror.HTTPStatusFromError(msg.Error) != http.StatusTooManyRequests {
-		h.WriteErrorResponse(c, msg)
-		return
+		return msg
 	}
 	_, exhausted := coreauth.PoolQuotaExhaustionDetails(msg.Error)
 	if !exhausted {
-		h.WriteErrorResponse(c, msg)
-		return
+		return msg
 	}
 	// Native Codex recognizes this type as terminal rather than sleeping Retry-After.
 	// Do not expose local admission estimates as provider reset metadata.
@@ -41,10 +46,9 @@ func (h *OpenAIResponsesAPIHandler) writeInitialResponsesError(c *gin.Context, m
 		"retryable": false,
 	})
 	if err != nil {
-		h.WriteErrorResponse(c, msg)
-		return
+		return msg
 	}
 	terminal := *msg
 	terminal.Error = &responsesPoolQuotaError{body: doc.String(), cause: msg.Error}
-	h.WriteErrorResponse(c, &terminal)
+	return &terminal
 }

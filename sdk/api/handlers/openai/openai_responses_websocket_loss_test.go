@@ -1049,8 +1049,7 @@ func TestResponsesWebsocketTerminal429WhenAllCredentialsExhaustedOrCooling(t *te
 		t.Fatalf("expected socket close after terminal 429 error frame, got frame: %s", extraFrame)
 	}
 
-	// 3. The single credential is now cooling down. A subsequent connection must receive
-	// a terminal 429 model_cooldown error frame with reset_seconds and Retry-After.
+	// 3. The manager can now certify pool exhaustion for a fresh connection.
 	conn2, resp2, errDial2 := websocket.DefaultDialer.Dial(wsURL, nil)
 	if resp2 != nil && resp2.Body != nil {
 		defer func() {
@@ -1089,8 +1088,16 @@ func TestResponsesWebsocketTerminal429WhenAllCredentialsExhaustedOrCooling(t *te
 	if got := ojson.GetBytesNoCopy(frame3, "error.code").String(); got != "model_cooldown" {
 		t.Fatalf("frame3 error.code = %q, want model_cooldown: %s", got, frame3)
 	}
-	if got := int(ojson.GetBytesNoCopy(frame3, "error.reset_seconds").Int()); got <= 0 {
-		t.Fatalf("frame3 error.reset_seconds = %d, want > 0: %s", got, frame3)
+	if got := ojson.GetBytesNoCopy(frame3, "error.type").String(); got != "usage_limit_reached" {
+		t.Fatalf("frame3 error.type = %q, want usage_limit_reached: %s", got, frame3)
+	}
+	if got := ojson.GetBytesNoCopy(frame3, "error.retryable").Raw; got != "false" {
+		t.Fatalf("frame3 error.retryable = %q, want false", got)
+	}
+	for _, path := range []string{"error.reset_seconds", "error.resets_at", "error.resets_in_seconds"} {
+		if ojson.GetBytesNoCopy(frame3, path).Exists() {
+			t.Fatalf("frame3 must not advertise provider reset metadata: %s", frame3)
+		}
 	}
 	if got := ojson.GetBytesNoCopy(frame3, "headers.Retry-After").String(); got == "" {
 		t.Fatalf("frame3 headers.Retry-After is empty: %s", frame3)
@@ -1100,6 +1107,36 @@ func TestResponsesWebsocketTerminal429WhenAllCredentialsExhaustedOrCooling(t *te
 	}
 	if creates.Load() != 2 {
 		t.Fatalf("upstream creates = %d, want 2 (cooling credential must not be called again)", creates.Load())
+	}
+
+	// 4. Reset the fixture only. An explicit full-context retry must not wait for the old deadline.
+	return429.Store(false)
+	if _, _, errReset := manager.ResetQuota(context.Background(), authID); errReset != nil {
+		t.Fatal(errReset)
+	}
+	conn3, resp3, errDial3 := websocket.DefaultDialer.Dial(wsURL, nil)
+	if resp3 != nil && resp3.Body != nil {
+		defer func() { _ = resp3.Body.Close() }()
+	}
+	if errDial3 != nil {
+		t.Fatal(errDial3)
+	}
+	defer func() { _ = conn3.Close() }()
+	if errWrite := conn3.WriteMessage(websocket.TextMessage, []byte(req3)); errWrite != nil {
+		t.Fatal(errWrite)
+	}
+	_ = conn3.SetReadDeadline(time.Now().Add(5 * time.Second))
+	for {
+		_, frame, errRead := conn3.ReadMessage()
+		if errRead != nil {
+			t.Fatalf("explicit retry after reset: %v", errRead)
+		}
+		if ojson.GetBytesNoCopy(frame, "type").String() == "response.completed" {
+			break
+		}
+	}
+	if creates.Load() != 3 {
+		t.Fatalf("upstream creates = %d after explicit retry, want 3", creates.Load())
 	}
 }
 

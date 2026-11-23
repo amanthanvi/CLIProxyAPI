@@ -750,6 +750,7 @@ func websocketJSONPayloadsFromChunk(chunk []byte) [][]byte {
 }
 
 func buildResponsesWebsocketErrorPayload(errMsg *interfaces.ErrorMessage) ([]byte, error) {
+	errMsg = nativeResponsesPoolQuotaError(errMsg)
 	status := http.StatusInternalServerError
 	errText := http.StatusText(status)
 	if errMsg != nil {
