@@ -89,8 +89,10 @@ func loadConfigFile(configFile string, optional, forUpload bool) (cfg *Config, s
 		if !generated {
 			forgetEphemeralServerID(file.snapshot.info)
 		}
-		cfg.ParsedSourceHash = file.snapshot.SourceHash()
 		cfg.SourceHash = committed.SourceHash()
+		if !bytes.Equal(data, committed.data) {
+			cfg.ParsedSourceHash = file.snapshot.SourceHash()
+		}
 		snapshot = committed.data
 		return nil
 	})

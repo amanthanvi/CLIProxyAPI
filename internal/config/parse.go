@@ -39,7 +39,6 @@ func ParsePreparedConfigBytes(data []byte) (*Config, error) {
 		return nil, errParse
 	}
 	cfg.SourceHash = ComputeSourceHash(data)
-	cfg.ParsedSourceHash = cfg.SourceHash
 	return cfg, nil
 }
 

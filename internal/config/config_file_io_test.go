@@ -158,6 +158,10 @@ func TestConfigFileIOLoadWritebackKeepsParsedSourceIdentity(t *testing.T) {
 	if got.cfg.SourceHash != ComputeSourceHash(current) || got.cfg.SourceHash == got.cfg.ParsedSourceHash {
 		t.Fatal("load did not distinguish the parsed bytes from the committed rewrite")
 	}
+	reloaded, errReload := LoadConfig(path)
+	if errReload != nil || reloaded.SourceHash != got.cfg.SourceHash || reloaded.ParsedSourceHash != "" {
+		t.Fatal("unchanged reload should carry one source hash and no rewrite provenance")
+	}
 }
 
 func TestConfigFileIOWritePreservesInodeModeAndSymlink(t *testing.T) {

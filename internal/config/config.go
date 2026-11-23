@@ -52,8 +52,8 @@ type Config struct {
 	// rewrites, or empty when the config was not loaded from a file.
 	SourceHash string `yaml:"-" json:"-"`
 
-	// ParsedSourceHash identifies the exact input bytes that supplied the runtime
-	// settings, before any startup rewrite. It is not a publication token.
+	// ParsedSourceHash holds the original SHA-256 only if startup rewrote the
+	// file. Otherwise SourceHash alone identifies the snapshot.
 	ParsedSourceHash string `yaml:"-" json:"-"`
 
 	// CredentialConcurrency contains Home-authoritative credential lifecycle settings.
