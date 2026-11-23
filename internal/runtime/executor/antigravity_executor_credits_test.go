@@ -888,6 +888,17 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 			if errRegister != nil {
 				t.Fatalf("register auth: %v", errRegister)
 			}
+			scope := cliproxyauth.AntigravityCreditsScope(registered)
+			if scope == "" {
+				t.Fatal("expected a credential registration scope")
+			}
+			refreshKey := authID + "|" + scope
+			failureKey := newAntigravityCreditsCacheKey(authID, scope)
+			loadRefresh := func() *antigravityCreditsHintRefreshState {
+				value, _ := antigravityCreditsHintRefreshByID.Load(refreshKey)
+				state, _ := value.(*antigravityCreditsHintRefreshState)
+				return state
+			}
 
 			req := cliproxyexecutor.Request{
 				Model:   model,
@@ -915,12 +926,10 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 					t.Fatal("initial Execute() succeeded, want 429 after quota and credits exhaustion")
 				}
 			}
-			if value, ok := antigravityCreditsHintRefreshByID.Load(authID); ok {
-				if state, ok := value.(*antigravityCreditsHintRefreshState); ok && state != nil {
-					waitForAntigravityCreditsRefresh(t, state)
-				}
+			if state := loadRefresh(); state != nil {
+				waitForAntigravityCreditsRefresh(t, state)
 			}
-			if _, failed := antigravityCreditsFailureByAuth.Load(newAntigravityCreditsCacheKey(authID, cliproxyauth.AntigravityCreditsScope(registered))); !failed {
+			if _, failed := antigravityCreditsFailureByAuth.Load(failureKey); !failed {
 				t.Fatal("expected auth to be marked permanently disabled after INSUFFICIENT_G1_CREDITS_BALANCE")
 			}
 			hint, ok := cliproxyauth.GetAntigravityCreditsHint(authID, registered.RegistrationEpoch)
@@ -931,12 +940,10 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 			// Step 2: Top up credits and expire the cached hint/throttle window while model remains in 1h quota cooldown.
 			toppedUp.Store(true)
 			callsBeforeTopUp := loadCodeAssistCalls.Load()
-			if value, ok := antigravityCreditsHintRefreshByID.Load(authID); ok {
-				if state, ok := value.(*antigravityCreditsHintRefreshState); ok && state != nil {
-					state.mu.Lock()
-					state.lastAttempt = time.Now().Add(-antigravityCreditsHintRefreshInterval - time.Second)
-					state.mu.Unlock()
-				}
+			if state := loadRefresh(); state != nil {
+				state.mu.Lock()
+				state.lastAttempt = time.Now().Add(-antigravityCreditsHintRefreshInterval - time.Second)
+				state.mu.Unlock()
 			}
 			cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{
 				Known:           true,
@@ -972,11 +979,11 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 				}
 			}
 
-			if value, ok := antigravityCreditsHintRefreshByID.Load(authID); ok {
-				if state, ok := value.(*antigravityCreditsHintRefreshState); ok && state != nil {
-					waitForAntigravityCreditsRefresh(t, state)
-				}
+			state := loadRefresh()
+			if state == nil {
+				t.Fatal("expected a credential-scoped refresh after top-up")
 			}
+			waitForAntigravityCreditsRefresh(t, state)
 			if loadCodeAssistCalls.Load() <= callsBeforeTopUp {
 				t.Fatalf("loadCodeAssist calls after top-up = %d, want > %d", loadCodeAssistCalls.Load(), callsBeforeTopUp)
 			}
@@ -984,7 +991,7 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 			if !ok || !hint.Known || !hint.Available || hint.CreditAmount != 2516 {
 				t.Fatalf("hint after recovery = %#v (ok=%v), want Known=true Available=true CreditAmount=2516", hint, ok)
 			}
-			if _, failed := antigravityCreditsFailureByAuth.Load(newAntigravityCreditsCacheKey(authID, cliproxyauth.AntigravityCreditsScope(registered))); failed {
+			if _, failed := antigravityCreditsFailureByAuth.Load(failureKey); failed {
 				t.Fatal("expected permanently disabled credits state to be cleared after recovery")
 			}
 		})
