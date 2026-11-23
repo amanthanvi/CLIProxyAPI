@@ -85,7 +85,24 @@ func BuildResponseForClientWithToolCapabilities(availableModels []map[string]any
 // toolSearchCapabilityForModel keeps Claude routes from advertising search.
 func BuildResponseForClientWithSearchToolRoutes(availableModels []map[string]any, providersForModel, searchToolProvidersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, toolSearchCapabilityForModel ToolSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) map[string]any {
 	return map[string]any{
-		"models": buildCodexClientModelsWithToolCapabilities(availableModels, providersForModel, searchToolProvidersForModel, webSearchCapabilityForModel, applyPatchCapabilityForModel, toolSearchCapabilityForModel, optimizeMultiAgentV2, clientVersion),
+		"models": buildCodexClientModelsWithToolCapabilities(availableModels, providersForModel, searchToolProvidersForModel, webSearchCapabilityForModel, applyPatchCapabilityForModel, toolSearchCapabilityForModel, nil, nil, optimizeMultiAgentV2, clientVersion),
+	}
+}
+
+// BuildResponseForLocalRegistry binds the last successful pool discovery to the
+// registered routes. It describes observed options, not request-time authorization.
+// Home model lists must not use the local registry for this evidence.
+func BuildResponseForLocalRegistry(availableModels []map[string]any, r *registry.ModelRegistry, applyPatch ApplyPatchCapabilityForModelFunc, toolSearch ToolSearchCapabilityForModelFunc, programSelectionPreserved, tierSelectionPreserved, optimizeMultiAgentV2 bool, clientVersion string) map[string]any {
+	var attestedCyberPrograms func(string) []string
+	var attestedServiceTiers func(string) *registry.CodexServiceTierMetadata
+	if programSelectionPreserved {
+		attestedCyberPrograms = r.AttestedCodexCyberPrograms
+	}
+	if tierSelectionPreserved {
+		attestedServiceTiers = r.AttestedCodexServiceTiers
+	}
+	return map[string]any{
+		"models": buildCodexClientModelsWithToolCapabilities(availableModels, r.GetModelProviders, nil, r.GetResponsesWebSearchCapability, applyPatch, toolSearch, attestedCyberPrograms, attestedServiceTiers, optimizeMultiAgentV2, clientVersion),
 	}
 }
 
@@ -102,10 +119,10 @@ func MarshalCompact(payload any) ([]byte, error) {
 }
 
 func buildCodexClientModels(models []map[string]any, providersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) []map[string]any {
-	return buildCodexClientModelsWithToolCapabilities(models, providersForModel, nil, webSearchCapabilityForModel, nil, nil, optimizeMultiAgentV2, clientVersion)
+	return buildCodexClientModelsWithToolCapabilities(models, providersForModel, nil, webSearchCapabilityForModel, nil, nil, nil, nil, optimizeMultiAgentV2, clientVersion)
 }
 
-func buildCodexClientModelsWithToolCapabilities(models []map[string]any, providersForModel, searchToolProvidersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, toolSearchCapabilityForModel ToolSearchCapabilityForModelFunc, optimizeMultiAgentV2 bool, clientVersion string) []map[string]any {
+func buildCodexClientModelsWithToolCapabilities(models []map[string]any, providersForModel, searchToolProvidersForModel ProvidersForModelFunc, webSearchCapabilityForModel WebSearchCapabilityForModelFunc, applyPatchCapabilityForModel ApplyPatchCapabilityForModelFunc, toolSearchCapabilityForModel ToolSearchCapabilityForModelFunc, attestedCyberPrograms func(string) []string, attestedServiceTiers func(string) *registry.CodexServiceTierMetadata, optimizeMultiAgentV2 bool, clientVersion string) []map[string]any {
 	templates, defaultTemplate, errLoadCodexClientModelTemplates := loadCodexClientModelTemplates()
 	if errLoadCodexClientModelTemplates != nil || defaultTemplate == nil {
 		return nil
@@ -126,6 +143,18 @@ func buildCodexClientModelsWithToolCapabilities(models []map[string]any, provide
 		if template, ok := templates[metadataID]; ok {
 			entry := cloneCodexClientModelMap(template)
 			entry["slug"] = id
+			if attestedCyberPrograms != nil && id == "codex/"+metadataID {
+				if programs := attestedCyberPrograms(id); len(programs) > 0 {
+					entry["available_access_programs"] = map[string]any{"cyber": programs}
+				}
+			}
+			if attestedServiceTiers != nil && id == "codex/"+metadataID {
+				if speed := attestedServiceTiers(id); speed != nil {
+					entry["service_tiers"] = speed.ServiceTiers
+					entry["default_service_tier"] = speed.DefaultServiceTier
+					entry["additional_speed_tiers"] = speed.AdditionalSpeed
+				}
+			}
 			info := registry.LookupModelInfo(id)
 			applyCodexClientModelCapabilities(entry, id, metadataID, info, providersForModel, clientVersion)
 			applyCodexClientDisplayName(entry, model)
@@ -248,6 +277,14 @@ func loadCodexClientModelTemplatesSnapshot(raw []byte, revision uint64) (map[str
 			if slug == "" {
 				continue
 			}
+			// Shared templates have no binding to the accounts serving a route.
+			// Caller-specific program offers cannot be inherited, even for a matching slug.
+			delete(model, "available_access_programs")
+			delete(model, "codex_access_program_account_hashes")
+			delete(model, "codex_access_programs_by_route")
+			model["service_tiers"] = []any{}
+			model["default_service_tier"] = nil
+			model["additional_speed_tiers"] = []any{}
 			templates[slug] = cloneCodexClientModelMap(model)
 			if defaultTemplate == nil || slug == "gpt-5.5" {
 				defaultTemplate = cloneCodexClientModelMap(model)

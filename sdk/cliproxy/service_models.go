@@ -2,10 +2,13 @@ package cliproxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strconv"
 	"strings"
 	"time"
 
+	codexauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/modelconfig"
@@ -332,6 +335,9 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		staticModels = nil
 	}
 	models = applyExcludedModels(models, excluded)
+	if provider == "codex" {
+		models = bindNativeCodexAccessPrograms(a, models)
+	}
 	models = applyOAuthModelAliasForAuth(cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
 		return true
@@ -351,6 +357,49 @@ func (s *Service) registerModelsForAuthWithConfigAndCache(ctx context.Context, c
 		s.asyncProbeAntigravityCapabilities(ctx, a, key)
 	}
 	return published
+}
+
+// bindNativeCodexAccessPrograms runs before aliases, plugin models and prefixes,
+// so a renamed or synthesized row cannot acquire a native upstream model binding.
+// Speed metadata shares this identity proof; Cyber Access separately rejects
+// the presentation-header overrides permitted here.
+func bindNativeCodexAccessPrograms(a *coreauth.Auth, models []*ModelInfo) []*ModelInfo {
+	if a == nil || a.Disabled || a.Provider != "codex" || a.AuthKind() != coreauth.AuthKindOAuth ||
+		coreauth.IsCodexUseSIWC(a) || coreauth.IsPluginVirtualAuth(a) {
+		return models
+	}
+	for key, value := range a.Attributes {
+		if value != "" && (key == "api_key" || key == "base_url" || strings.HasPrefix(key, "header:")) {
+			return models
+		}
+	}
+	rawIDToken, _ := a.Metadata["id_token"].(string)
+	claims, err := codexauth.ParseJWTToken(strings.TrimSpace(rawIDToken))
+	if err != nil || claims == nil {
+		return models
+	}
+	accountID := strings.TrimSpace(claims.CodexAuthInfo.ChatgptAccountID)
+	requestAccountID, _ := a.Metadata["account_id"].(string)
+	index := a.EnsureIndex()
+	if accountID == "" || requestAccountID != accountID || index == "" ||
+		strings.ContainsAny(index+accountID, "\x00") {
+		return models
+	}
+	digest := sha256.Sum256([]byte("cpamc-codex-access-v1\x00" + index + "\x00" + accountID))
+	accountHash := hex.EncodeToString(digest[:])
+	out := make([]*ModelInfo, len(models))
+	for i, model := range models {
+		out[i] = model
+		if model == nil || model.ID == "" || strings.Contains(model.ID, "/") || model.UserDefined ||
+			model.IsCompat || !registry.NativeCodexIdentityHeaders(model.Config) {
+			continue
+		}
+		clone := cloneModelInfoForCatalogRoute(model)
+		clone.CodexAccessProgramModelID = model.ID
+		clone.CodexAccessProgramAccountHash = accountHash
+		out[i] = &clone
+	}
+	return out
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for
@@ -1317,6 +1366,7 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 	}
 
 	forward := make(map[string][]aliasEntry, len(aliases))
+	shadowedNativeIDs := make(map[string]struct{}, len(aliases))
 	for i := range aliases {
 		name := strings.TrimSpace(aliases[i].Name)
 		alias := strings.TrimSpace(aliases[i].Alias)
@@ -1326,6 +1376,7 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 		if name == alias {
 			continue
 		}
+		shadowedNativeIDs[strings.ToLower(alias)] = struct{}{}
 		key := strings.ToLower(name)
 		forward[key] = append(forward[key], aliasEntry{
 			alias:       alias,
@@ -1348,6 +1399,14 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			continue
 		}
 		key := strings.ToLower(id)
+		// Reverse alias resolution runs even when catalog dedup keeps an
+		// earlier canonical row. Such a row no longer proves its upstream slug.
+		if _, shadowed := shadowedNativeIDs[key]; shadowed && model.CodexAccessProgramAccountHash != "" {
+			clone := cloneModelInfoForCatalogRoute(model)
+			clone.CodexAccessProgramModelID = ""
+			clone.CodexAccessProgramAccountHash = ""
+			model = &clone
+		}
 		entries := forward[key]
 		if len(entries) == 0 {
 			if _, exists := seen[id]; exists {

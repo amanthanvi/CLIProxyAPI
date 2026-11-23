@@ -228,7 +228,9 @@ func (m *Manager) wrapStreamResultWithCancel(ctx context.Context, auth *Auth, pr
 	accessToken := authAccessTokenForRequest(ctx, auth, opts.Headers)
 	out := make(chan cliproxyexecutor.StreamChunk)
 	streamStart := time.Now()
+	done, _ := m.beginAffinityExecution(true)
 	go func() {
+		defer done()
 		defer close(out)
 		if cancelAttempt != nil {
 			defer cancelAttempt()

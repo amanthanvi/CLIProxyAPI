@@ -189,6 +189,21 @@ func ReadMetadataString(metadata *map[string]any, key string) string {
 	return value
 }
 
+// ReadMetadataBool reads a boolean-valued credential metadata entry under the
+// same lock used by the profile and device-pool writers.
+func ReadMetadataBool(metadata *map[string]any, key string) bool {
+	if metadata == nil {
+		return false
+	}
+	claudeDevicePoolMu.Lock()
+	defer claudeDevicePoolMu.Unlock()
+	if *metadata == nil {
+		return false
+	}
+	value, _ := (*metadata)[key].(bool)
+	return value
+}
+
 // ReadMetadataStringMap reads a map[string]string metadata entry under the metadata
 // lock, copying out string pairs from either map[string]string or map[string]any.
 func ReadMetadataStringMap(metadata *map[string]any, key string) map[string]string {

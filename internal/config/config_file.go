@@ -417,11 +417,14 @@ func replaceConfigContents(file *os.File, original, replacement []byte, check fu
 	return nil
 }
 
+// Test seam for the partial in-place publication and rollback boundaries.
+var truncateConfigFile = (*os.File).Truncate
+
 func overwriteConfigFile(file *os.File, data []byte, check func() error) error {
 	if _, errWrite := file.WriteAt(data, 0); errWrite != nil {
 		return errWrite
 	}
-	if errTruncate := file.Truncate(int64(len(data))); errTruncate != nil {
+	if errTruncate := truncateConfigFile(file, int64(len(data))); errTruncate != nil {
 		return errTruncate
 	}
 	if errSync := file.Sync(); errSync != nil {

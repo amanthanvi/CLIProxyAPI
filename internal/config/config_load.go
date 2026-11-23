@@ -50,6 +50,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 }
 
 func loadConfigFile(configFile string, optional, forUpload bool) (cfg *Config, snapshot []byte, err error) {
+	readOnlyRewrite := false
 	err = withConfigFile(configFile, configWriteIfPossible, func(file *lockedConfigFile) error {
 		data := file.snapshot.data
 		parsed, errParse := validateStartupConfig(data, optional)
@@ -82,15 +83,13 @@ func loadConfigFile(configFile string, optional, forUpload bool) (cfg *Config, s
 			if generated && lookupEphemeralServerID(file.snapshot.info) == "" {
 				rememberEphemeralServerID(file.snapshot.info, cfg.ServerID)
 			}
-			log.Debug("configuration is read-only; startup rewrites were not persisted")
+			readOnlyRewrite = true
 			committed = file.snapshot
 		}
 		if !generated {
 			forgetEphemeralServerID(file.snapshot.info)
 		}
-		if !forUpload {
-			cfg.sanitizeStartupConfig()
-		}
+		cfg.ParsedSourceHash = file.snapshot.SourceHash()
 		cfg.SourceHash = committed.SourceHash()
 		snapshot = committed.data
 		return nil
@@ -100,6 +99,12 @@ func loadConfigFile(configFile string, optional, forUpload bool) (cfg *Config, s
 			return standbyConfig(), nil, nil
 		}
 		return nil, nil, err
+	}
+	if readOnlyRewrite {
+		log.Debug("configuration is read-only; startup rewrites were not persisted")
+	}
+	if !forUpload && snapshot != nil {
+		cfg.sanitizeStartupConfig(nil)
 	}
 	return cfg, snapshot, nil
 }

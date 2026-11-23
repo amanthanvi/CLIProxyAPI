@@ -52,6 +52,10 @@ type Config struct {
 	// rewrites, or empty when the config was not loaded from a file.
 	SourceHash string `yaml:"-" json:"-"`
 
+	// ParsedSourceHash identifies the exact input bytes that supplied the runtime
+	// settings, before any startup rewrite. It is not a publication token.
+	ParsedSourceHash string `yaml:"-" json:"-"`
+
 	// CredentialConcurrency contains Home-authoritative credential lifecycle settings.
 	CredentialConcurrency CredentialConcurrencyConfig `yaml:"credential-concurrency" json:"credential-concurrency"`
 

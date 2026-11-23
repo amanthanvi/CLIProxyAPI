@@ -48,6 +48,10 @@ type ModelInfo struct {
 	OAuthAlias string `json:"-"`
 	// OAuthAliasSource is the exact published source of that alias, including any suffix.
 	OAuthAliasSource string `json:"-"`
+	// CodexAccessProgramModelID and AccountHash bind native plan rows to the
+	// original upstream slug and credential observed by the private publisher.
+	CodexAccessProgramModelID     string `json:"-"`
+	CodexAccessProgramAccountHash string `json:"-"`
 	// ExplicitThinking indicates thinking/reasoning configuration was explicitly configured for this model.
 	ExplicitThinking bool `json:"-"`
 	// ExplicitInputModalities indicates input modalities were explicitly configured for this model.
@@ -362,6 +366,62 @@ func responsesWebSearchProviderPathSupport(provider string) *bool {
 		}
 		return nil
 	}
+}
+
+// CodexAccessProgramsAttested requires every registered route for this exact
+// public ID to be a bound native row covered by the publisher's account cohort.
+func (r *ModelRegistry) CodexAccessProgramsAttested(modelID string, cohort map[string]struct{}) bool {
+	return r.codexNativeIdentityAttested(modelID, cohort, false)
+}
+
+// CodexServiceTiersAttested permits only the native client-identity headers
+// supplied by the built-in Codex plan catalog, not arbitrary header overrides.
+func (r *ModelRegistry) CodexServiceTiersAttested(modelID string, cohort map[string]struct{}) bool {
+	return r.codexNativeIdentityAttested(modelID, cohort, true)
+}
+
+// NativeCodexIdentityHeaders permits the two presentation headers in native
+// Codex plan rows. Authorization, account, host and unknown headers fail closed.
+func NativeCodexIdentityHeaders(config *ModelConfig) bool {
+	if config == nil {
+		return true
+	}
+	for header := range config.OverrideHeader {
+		if !strings.EqualFold(header, "User-Agent") && !strings.EqualFold(header, "originator") {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *ModelRegistry) codexNativeIdentityAttested(modelID string, cohort map[string]struct{}, allowIdentityHeaders bool) bool {
+	if r == nil || len(cohort) == 0 || !strings.HasPrefix(modelID, "codex/") {
+		return false
+	}
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	found := false
+	for clientID, modelIDs := range r.clientModels {
+		for _, registeredID := range modelIDs {
+			if registeredID != modelID {
+				continue
+			}
+			info := r.clientModelInfos[clientID][registeredID]
+			if r.clientProviders[clientID] != "codex" || info == nil ||
+				info.CodexAccessProgramModelID == "" ||
+				modelID != "codex/"+info.CodexAccessProgramModelID ||
+				info.CodexAccessProgramAccountHash == "" ||
+				(info.Config != nil && len(info.Config.OverrideHeader) != 0 &&
+					(!allowIdentityHeaders || !NativeCodexIdentityHeaders(info.Config))) {
+				return false
+			}
+			if _, ok := cohort[info.CodexAccessProgramAccountHash]; !ok {
+				return false
+			}
+			found = true
+		}
+	}
+	return found
 }
 
 func boolPointer(value bool) *bool {

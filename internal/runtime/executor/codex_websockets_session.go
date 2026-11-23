@@ -249,6 +249,11 @@ func (s *codexWebsocketSession) writeMessage(conn *websocket.Conn, msgType int, 
 	if testWebsocketWritePayloadHook != nil {
 		testWebsocketWritePayloadHook(conn)
 	}
+	return s.writeMessageLocked(conn, msgType, payload)
+}
+
+// writeMessageLocked writes one message; the caller holds writeMu.
+func (s *codexWebsocketSession) writeMessageLocked(conn *websocket.Conn, msgType int, payload []byte) error {
 	if len(payload) <= codexWebsocketWriteChunkSize {
 		return conn.WriteMessage(msgType, payload)
 	}

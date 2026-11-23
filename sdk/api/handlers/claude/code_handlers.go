@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
@@ -27,6 +28,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -87,6 +89,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeMessages(c *gin.Context) {
 
 	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
 	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
+	rawJSON = h.qualifyBareClaudeModelInBody(rawJSON)
 
 	// Check if the client requested a streaming response.
 	streamResult := ojson.GetBytesNoCopy(rawJSON, "stream")
@@ -119,6 +122,7 @@ func (h *ClaudeCodeAPIHandler) ClaudeCountTokens(c *gin.Context) {
 
 	// Decode claude-fable-5-dd-<reversed> model IDs back to the real model name for routing.
 	rawJSON = rewriteClaudeDDModelInBody(rawJSON)
+	rawJSON = h.qualifyBareClaudeModelInBody(rawJSON)
 
 	c.Header("Content-Type", "application/json")
 
@@ -146,11 +150,74 @@ func rewriteClaudeDDModelInBody(rawJSON []byte) []byte {
 	if resolved == modelName {
 		return rawJSON
 	}
-	updated, errSet := ojson.SetBytes(rawJSON, "model", resolved)
+	doc := ojson.NewDoc(rawJSON)
+	errSet := doc.Set("model", resolved)
 	if errSet != nil {
 		return rawJSON
 	}
-	return updated
+	return doc.Bytes()
+}
+
+// qualifyBareClaudeModelInBody rewrites an unprefixed claude-* model as
+// "<claude-code.bare-model-prefix>/<model>" when the bare ID has no route of its own and
+// the qualified route is registered only by the claude provider. The thinking suffix and
+// all other request fields are kept; any other request is returned unchanged. Home mode
+// and active plugin model routers own routing, so their requests are not rewritten.
+func (h *ClaudeCodeAPIHandler) qualifyBareClaudeModelInBody(rawJSON []byte) []byte {
+	if h == nil || h.BaseAPIHandler == nil {
+		return rawJSON
+	}
+	cfg := h.CurrentConfig()
+	if cfg == nil {
+		return rawJSON
+	}
+	if h.AuthManager != nil && h.AuthManager.HomeEnabled() {
+		return rawJSON
+	}
+	prefix := strings.TrimSpace(cfg.ClaudeCode.BareModelPrefix)
+	if !isValidBareModelPrefix(prefix) {
+		return rawJSON
+	}
+	// A plugin model router may claim a bare model before registry routing.
+	if h.HasActiveModelRouters() {
+		return rawJSON
+	}
+	model := ojson.GetBytes(rawJSON, "model")
+	if model.Type != ojson.String {
+		return rawJSON
+	}
+	modelName := model.String()
+	baseModel := thinking.ParseSuffix(modelName).ModelName
+	if strings.Contains(modelName, "/") || !strings.HasPrefix(baseModel, "claude-") {
+		return rawJSON
+	}
+	// Keep bare models that already route, using the same lookups as request routing.
+	if len(util.GetProviderName(baseModel)) > 0 || (baseModel != modelName && len(util.GetProviderName(modelName)) > 0) {
+		return rawJSON
+	}
+	providers := registry.GetGlobalRegistry().GetModelProviders(prefix + "/" + baseModel)
+	if len(providers) != 1 || providers[0] != "claude" {
+		return rawJSON
+	}
+	if !ojson.ValidBytes(rawJSON) {
+		return rawJSON
+	}
+	doc := ojson.NewDoc(rawJSON)
+	errSet := doc.Set("model", prefix+"/"+modelName)
+	if errSet != nil {
+		return rawJSON
+	}
+	return doc.Bytes()
+}
+
+// isValidBareModelPrefix accepts a single credential prefix segment.
+func isValidBareModelPrefix(prefix string) bool {
+	if prefix == "" || prefix == "." || strings.Contains(prefix, "..") {
+		return false
+	}
+	return !strings.ContainsFunc(prefix, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(`/\?#`, r)
+	})
 }
 
 // ClaudeModels handles the Claude models listing endpoint.
@@ -649,6 +716,11 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
 	}
 	var retryAfter string
 	if msg != nil && msg.Error != nil {
+		if status == http.StatusTooManyRequests {
+			for key, values := range coreauth.SafeClaudeRateLimitResponseHeaders(msg.Error, time.Now()) {
+				c.Writer.Header()[key] = values
+			}
+		}
 		safeHeaders := coreauth.SafeResponseHeaders(msg.Error)
 		retryAfter = safeHeaders.Get("Retry-After")
 		for _, value := range safeHeaders.Values("Retry-After") {
@@ -658,6 +730,10 @@ func (h *ClaudeCodeAPIHandler) WriteErrorResponse(c *gin.Context, msg *interface
 	if msg != nil && msg.Addon != nil && handlers.PassthroughHeadersEnabled(h.CurrentConfig()) {
 		for key, values := range msg.Addon {
 			if len(values) == 0 || handlers.IsCPAReservedResponseHeader(key) {
+				continue
+			}
+			// Native quota reporting comes only from the validated typed source above.
+			if status == http.StatusTooManyRequests && strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "anthropic-ratelimit-unified-") {
 				continue
 			}
 			// A locally trusted cooldown deadline outranks the raw upstream

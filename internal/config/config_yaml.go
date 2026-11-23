@@ -14,10 +14,24 @@ import (
 // Existing v8 documents are saved in the latest layout. Successful migration
 // also synchronizes cfg's OAuth scope for runtime snapshots.
 func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...bool) error {
+	// SDK values can call back into config readers while marshaling.
+	rendered, err := yaml.Marshal((*legacyConfig)(cfg))
+	if err != nil {
+		return err
+	}
+	var generated yaml.Node
+	if err = yaml.Unmarshal(rendered, &generated); err != nil {
+		return err
+	}
+	if generated.Kind != yaml.DocumentNode || len(generated.Content) == 0 || generated.Content[0] == nil || generated.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("expected generated root mapping node")
+	}
+
 	var migrated *Config
 	var commented []ArchivedV8Section
-	err := withConfigFile(configFile, configWrite, func(file *lockedConfigFile) error {
-		data, cfgAfter, sections, errRender := renderConfigSave(file.snapshot.data, cfg, len(migrateV8) > 0 && migrateV8[0])
+	var warnings []configFileWarning
+	err = withConfigFile(configFile, configWrite, func(file *lockedConfigFile) error {
+		data, cfgAfter, sections, errRender := renderConfigSave(file.snapshot.data, generated.Content[0], cfg.Claude.OAuthIncludeCreateAPIKey == nil, len(migrateV8) > 0 && migrateV8[0], &warnings)
 		if errRender != nil {
 			return errRender
 		}
@@ -27,6 +41,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 		migrated, commented = cfgAfter, sections
 		return nil
 	})
+	emitConfigFileWarnings(warnings)
 	if err != nil {
 		return err
 	}
@@ -38,7 +53,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...boo
 	return nil
 }
 
-func renderConfigSave(data []byte, persistCfg *Config, migrating bool) ([]byte, *Config, []ArchivedV8Section, error) {
+func renderConfigSave(data []byte, generated *yaml.Node, pruneLegacyClaudeCreateKey, migrating bool, warnings *[]configFileWarning) ([]byte, *Config, []ArchivedV8Section, error) {
 	docs, err := decodeConfigStream(data)
 	if err != nil {
 		return nil, nil, nil, err
@@ -63,22 +78,6 @@ func renderConfigSave(data []byte, persistCfg *Config, migrating bool) ([]byte, 
 	}
 	original.Content[0] = flat
 
-	// Marshal the current cfg to YAML, then unmarshal to a yaml.Node we can merge from.
-	rendered, err := yaml.Marshal((*legacyConfig)(persistCfg))
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	var generated yaml.Node
-	if err = yaml.Unmarshal(rendered, &generated); err != nil {
-		return nil, nil, nil, err
-	}
-	if generated.Kind != yaml.DocumentNode || len(generated.Content) == 0 || generated.Content[0] == nil {
-		return nil, nil, nil, fmt.Errorf("invalid generated yaml structure")
-	}
-	if generated.Content[0].Kind != yaml.MappingNode {
-		return nil, nil, nil, fmt.Errorf("expected generated root mapping node")
-	}
-
 	// Keep obsolete roots until v8 migration can preserve them as comments.
 	if !migrating {
 		removeLegacyAuthBlock(original.Content[0])
@@ -87,22 +86,22 @@ func renderConfigSave(data []byte, persistCfg *Config, migrating bool) ([]byte, 
 	}
 	removeLegacyOpenAICompatAPIKeys(original.Content[0])
 
-	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-excluded-models")
-	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
-	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-request-scoped-errors")
-	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-settings")
-	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "antigravity", "sensitive-words-replace")
-	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "antigravity", "sensitive-patterns-replace")
-	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "devin", "sensitive-words-replace")
-	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "devin", "sensitive-patterns-replace")
-	replacePluginConfigsSubtree(original.Content[0], generated.Content[0])
-	if persistCfg != nil && persistCfg.Claude.OAuthIncludeCreateAPIKey == nil {
+	pruneMappingToGeneratedKeys(original.Content[0], generated, "oauth-excluded-models")
+	pruneMappingToGeneratedKeys(original.Content[0], generated, "oauth-model-alias")
+	pruneMappingToGeneratedKeys(original.Content[0], generated, "oauth-request-scoped-errors")
+	pruneMappingToGeneratedKeys(original.Content[0], generated, "oauth-settings")
+	pruneMappingToGeneratedKeys(original.Content[0], generated, "antigravity", "sensitive-words-replace")
+	pruneMappingToGeneratedKeys(original.Content[0], generated, "antigravity", "sensitive-patterns-replace")
+	pruneMappingToGeneratedKeys(original.Content[0], generated, "devin", "sensitive-words-replace")
+	pruneMappingToGeneratedKeys(original.Content[0], generated, "devin", "sensitive-patterns-replace")
+	replacePluginConfigsSubtree(original.Content[0], generated)
+	if pruneLegacyClaudeCreateKey {
 		deleteYAMLPath(original.Content[0], "claude.oauth-include-create-api-key")
 	}
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
-	mergeMappingPreserve(original.Content[0], generated.Content[0])
-	if err = restoreV8Layout(original.Content[0], layout, data, generated.Content[0]); err != nil {
+	mergeMappingPreserve(original.Content[0], generated)
+	if err = restoreV8Layout(original.Content[0], layout, data, generated, warnings); err != nil {
 		return nil, nil, nil, err
 	}
 	if !migrating {

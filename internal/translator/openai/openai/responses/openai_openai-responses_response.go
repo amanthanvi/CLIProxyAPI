@@ -78,6 +78,7 @@ type oaiToResponsesState struct {
 	TotalTokens      int64
 	ReasoningTokens  int64
 	UsageSeen        bool
+	ServiceTier      string
 }
 
 // responseIDCounter provides a process-wide unique counter for synthesized response identifiers.
@@ -124,8 +125,6 @@ type responsesRequestEcho struct {
 	hasReasoning          bool
 	safetyIdentifier      string
 	hasSafetyIdentifier   bool
-	serviceTier           string
-	hasServiceTier        bool
 	store                 bool
 	hasStore              bool
 	temperature           float64
@@ -191,10 +190,6 @@ func extractResponsesRequestEcho(root ojson.Result) responsesRequestEcho {
 		case "safety_identifier":
 			if !e.hasSafetyIdentifier {
 				e.safetyIdentifier, e.hasSafetyIdentifier = strings.Clone(value.String()), true
-			}
-		case "service_tier":
-			if !e.hasServiceTier {
-				e.serviceTier, e.hasServiceTier = strings.Clone(value.String()), true
 			}
 		case "store":
 			if !e.hasStore {
@@ -269,9 +264,6 @@ func (e responsesRequestEcho) applyDoc(dstDoc *ojson.Doc, prefix string) {
 	}
 	if e.hasSafetyIdentifier {
 		_ = dstDoc.Set(prefix+"safety_identifier", e.safetyIdentifier)
-	}
-	if e.hasServiceTier {
-		_ = dstDoc.Set(prefix+"service_tier", e.serviceTier)
 	}
 	if e.hasStore {
 		_ = dstDoc.Set(prefix+"store", e.store)
@@ -430,6 +422,9 @@ func buildResponsesCompletedEvent(st *oaiToResponsesState, nextSeq func() int) [
 	if len(outputs) > 0 {
 		_ = completedDoc.SetRawBytes("response.output", translatorcommon.JoinRawArray(outputs))
 	}
+	if st.ServiceTier != "" {
+		_ = completedDoc.Set("response.service_tier", st.ServiceTier)
+	}
 	if st.UsageSeen {
 		_ = completedDoc.Set("response.usage.input_tokens", st.PromptTokens)
 		_ = completedDoc.Set("response.usage.input_tokens_details.cached_tokens", st.CachedTokens)
@@ -506,6 +501,13 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		}
 	}
 
+	if tier := root.Get("service_tier"); tier.Exists() {
+		if tier.Type == ojson.String {
+			st.ServiceTier = strings.Clone(tier.String())
+		} else {
+			st.ServiceTier = ""
+		}
+	}
 	if usage := root.Get("usage"); usage.Exists() {
 		if v := usage.Get("prompt_tokens"); v.Exists() {
 			st.PromptTokens = v.Int()
@@ -1358,6 +1360,10 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 	}
 	if len(outputItems) > 0 {
 		_ = respDoc.SetRawBytes("output", translatorcommon.JoinRawArray(outputItems))
+	}
+
+	if tier := root.Get("service_tier"); tier.Type == ojson.String && tier.String() != "" {
+		_ = respDoc.Set("service_tier", tier.String())
 	}
 
 	// usage mapping

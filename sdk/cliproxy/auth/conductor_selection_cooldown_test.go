@@ -882,9 +882,7 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 					t.Fatalf("Execute() error = %T (%v), want *modelCooldownError", errExecute, errExecute)
 				}
 
-				before := time.Now().Unix()
 				headers := cooldownErr.Headers()
-				after := time.Now().Unix()
 				retrySeconds, errSeconds := strconv.ParseInt(headers.Get("Retry-After"), 10, 64)
 				if errSeconds != nil || retrySeconds <= 0 {
 					t.Fatalf("Retry-After = %q, want positive seconds", headers.Get("Retry-After"))
@@ -895,11 +893,11 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 				if got := headers.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "seven_day" {
 					t.Fatalf("Anthropic-Ratelimit-Unified-Representative-Claim = %q, want seven_day", got)
 				}
-				if got := headers.Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "rejected" {
-					t.Fatalf("Anthropic-Ratelimit-Unified-7d-Status = %q, want rejected", got)
+				if got := headers.Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "" {
+					t.Fatalf("non-allowlisted 7d status = %q, want empty", got)
 				}
-				if got := headers.Get("Anthropic-Ratelimit-Unified-5h-Status"); got != "allowed" {
-					t.Fatalf("Anthropic-Ratelimit-Unified-5h-Status = %q, want allowed", got)
+				if got := headers.Get("Anthropic-Ratelimit-Unified-5h-Status"); got != "" {
+					t.Fatalf("non-allowlisted 5h status = %q, want empty", got)
 				}
 				if got := headers.Get("Anthropic-Ratelimit-Unified-Overage-Status"); got != "rejected" {
 					t.Fatalf("Anthropic-Ratelimit-Unified-Overage-Status = %q, want rejected", got)
@@ -909,11 +907,11 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 				if errReset != nil {
 					t.Fatalf("Anthropic-Ratelimit-Unified-Reset = %q, want unix epoch", headers.Get("Anthropic-Ratelimit-Unified-Reset"))
 				}
-				if unifiedReset < before+retrySeconds || unifiedReset > after+retrySeconds {
-					t.Fatalf("Anthropic-Ratelimit-Unified-Reset = %d, want in [%d, %d] aligned with Retry-After %d", unifiedReset, before+retrySeconds, after+retrySeconds, retrySeconds)
+				if unifiedReset != upstreamReset {
+					t.Fatalf("Anthropic-Ratelimit-Unified-Reset = %d, want original upstream epoch %d", unifiedReset, upstreamReset)
 				}
-				if got := headers.Get("Anthropic-Ratelimit-Unified-7d-Reset"); got != strconv.FormatInt(unifiedReset, 10) {
-					t.Fatalf("Anthropic-Ratelimit-Unified-7d-Reset = %q, want %d", got, unifiedReset)
+				if got := headers.Get("Anthropic-Ratelimit-Unified-7d-Reset"); got != "" {
+					t.Fatalf("non-allowlisted 7d reset = %q, want empty", got)
 				}
 
 				safeHeaders := SafeResponseHeaders(errExecute)
@@ -924,101 +922,32 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 		}
 	})
 
-	t.Run("infers claim from duration when signals are absent", func(t *testing.T) {
-		errFiveHour := newModelCooldownError("claude-haiku-4-5-20251001", "claude", 2*time.Hour)
-		h5 := errFiveHour.Headers()
-		if got := h5.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "five_hour" {
-			t.Fatalf("5h fallback claim = %q, want five_hour", got)
-		}
-		if got := h5.Get("Anthropic-Ratelimit-Unified-5h-Status"); got != "rejected" {
-			t.Fatalf("5h fallback status = %q, want rejected", got)
-		}
-		if got := h5.Get("Anthropic-Ratelimit-Unified-Overage-Status"); got != "rejected" {
-			t.Fatalf("5h fallback overage status = %q, want rejected", got)
-		}
-
-		errSevenDay := newModelCooldownError("claude-haiku-4-5-20251001", "claude", 6*time.Hour)
-		h7 := errSevenDay.Headers()
-		if got := h7.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "seven_day" {
-			t.Fatalf("7d fallback claim = %q, want seven_day", got)
-		}
-		if got := h7.Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "rejected" {
-			t.Fatalf("7d fallback status = %q, want rejected", got)
-		}
-	})
-
-	t.Run("preserves allowed shared windows on overage claim and aligns model-family window resets", func(t *testing.T) {
-		overageErr := newModelCooldownErrorForCandidates("claude-sonnet-4-5-20250929", "claude", 30*time.Second, nil, true, map[string]string{
-			"Anthropic-Ratelimit-Unified-Status":               "rejected",
-			"Anthropic-Ratelimit-Unified-Representative-Claim": "overage",
-			"Anthropic-Ratelimit-Unified-5h-Status":            "allowed",
-			"Anthropic-Ratelimit-Unified-7d-Status":            "allowed",
-			"Anthropic-Ratelimit-Unified-Overage-Status":       "rejected",
-		})
-		overageHeaders := overageErr.Headers()
-		if got := overageHeaders.Get("Anthropic-Ratelimit-Unified-5h-Status"); got != "allowed" {
-			t.Fatalf("overage cooldown overwrote 5h status = %q, want allowed", got)
-		}
-		if got := overageHeaders.Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "allowed" {
-			t.Fatalf("overage cooldown overwrote 7d status = %q, want allowed", got)
-		}
-		if got := overageHeaders.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "overage" {
-			t.Fatalf("overage cooldown claim = %q, want overage", got)
-		}
-
-		sonnetErr := newModelCooldownErrorForCandidates("claude-sonnet-4-5-20250929", "claude", 2*time.Hour, nil, true, map[string]string{
-			"Anthropic-Ratelimit-Unified-Status":               "rejected",
-			"Anthropic-Ratelimit-Unified-Representative-Claim": "seven_day_sonnet",
-			"Anthropic-Ratelimit-Unified-5h-Status":            "allowed",
-			"Anthropic-Ratelimit-Unified-7d-Status":            "allowed",
-			"Anthropic-Ratelimit-Unified-7d_sonnet-Status":     "rejected",
-			"Anthropic-Ratelimit-Unified-7d_sonnet-Reset":      "1700000000",
-			"Anthropic-Ratelimit-Unified-Overage-Status":       "rejected",
-		})
-		sonnetHeaders := sonnetErr.Headers()
-		if got := sonnetHeaders.Get("Anthropic-Ratelimit-Unified-5h-Status"); got != "allowed" {
-			t.Fatalf("7d_sonnet cooldown overwrote 5h status = %q, want allowed", got)
-		}
-		if got := sonnetHeaders.Get("Anthropic-Ratelimit-Unified-7d_sonnet-Reset"); got != sonnetHeaders.Get("Anthropic-Ratelimit-Unified-Reset") {
-			t.Fatalf("7d_sonnet reset = %q, want %q", got, sonnetHeaders.Get("Anthropic-Ratelimit-Unified-Reset"))
-		}
-
-		overageNoClaimErr := newModelCooldownErrorForCandidates("claude-sonnet-4-5-20250929", "claude", 30*time.Second, nil, true, map[string]string{
-			"Anthropic-Ratelimit-Unified-Status":         "rejected",
-			"Anthropic-Ratelimit-Unified-5h-Status":      "allowed",
-			"Anthropic-Ratelimit-Unified-7d-Status":      "allowed",
-			"Anthropic-Ratelimit-Unified-Overage-Status": "rejected",
-		})
-		overageNoClaimHeaders := overageNoClaimErr.Headers()
-		if got := overageNoClaimHeaders.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "overage" {
-			t.Fatalf("overage without claim inferred %q, want overage", got)
-		}
-		if got := overageNoClaimHeaders.Get("Anthropic-Ratelimit-Unified-5h-Status"); got != "allowed" {
-			t.Fatalf("overage without claim 5h status = %q, want allowed", got)
-		}
-
-		sonnetNoClaimErr := newModelCooldownErrorForCandidates("claude-sonnet-4-5-20250929", "claude", 2*time.Hour, nil, true, map[string]string{
-			"Anthropic-Ratelimit-Unified-Status":           "rejected",
-			"Anthropic-Ratelimit-Unified-5h-Status":        "allowed",
-			"Anthropic-Ratelimit-Unified-7d-Status":        "allowed",
-			"Anthropic-Ratelimit-Unified-7d_sonnet-Status": "rejected",
-			"Anthropic-Ratelimit-Unified-Overage-Status":   "rejected",
-		})
-		sonnetNoClaimHeaders := sonnetNoClaimErr.Headers()
-		if got := sonnetNoClaimHeaders.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "seven_day_sonnet" {
-			t.Fatalf("7d_sonnet without claim inferred %q, want seven_day_sonnet", got)
-		}
-
-		fiveAllowedOnlyErr := newModelCooldownErrorForCandidates("claude-sonnet-4-5-20250929", "claude", 2*time.Hour, nil, true, map[string]string{
-			"Anthropic-Ratelimit-Unified-Status":    "rejected",
-			"Anthropic-Ratelimit-Unified-5h-Status": "allowed",
-		})
-		fiveAllowedOnlyHeaders := fiveAllowedOnlyErr.Headers()
-		if got := fiveAllowedOnlyHeaders.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "seven_day" {
-			t.Fatalf("5h=allowed with 2h reset inferred %q, want seven_day", got)
-		}
-		if got := fiveAllowedOnlyHeaders.Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "rejected" {
-			t.Fatalf("5h=allowed with 2h reset 7d status = %q, want rejected", got)
+	t.Run("does not infer provider metadata from local cooldown state", func(t *testing.T) {
+		for _, duration := range []time.Duration{30 * time.Second, 2 * time.Hour, 6 * time.Hour} {
+			for _, signals := range []map[string]string{
+				nil,
+				{
+					"Anthropic-Ratelimit-Unified-Status":         "rejected",
+					"Anthropic-Ratelimit-Unified-5h-Status":      "allowed",
+					"Anthropic-Ratelimit-Unified-Overage-Status": "rejected",
+				},
+				{
+					"Anthropic-Ratelimit-Unified-Status":               "rejected",
+					"Anthropic-Ratelimit-Unified-Representative-Claim": "seven_day_sonnet",
+					"Anthropic-Ratelimit-Unified-7d_sonnet-Reset":      "1700000000",
+				},
+			} {
+				err := newModelCooldownErrorForCandidates("claude-sonnet-4-5-20250929", "claude", duration, nil, true, signals)
+				headers := err.Headers()
+				for key := range headers {
+					if strings.HasPrefix(strings.ToLower(key), "anthropic-ratelimit-unified-") {
+						t.Fatalf("local cooldown synthesized provider metadata %q", key)
+					}
+				}
+				if headers.Get("Retry-After") == "" {
+					t.Fatal("local cooldown lost transport Retry-After")
+				}
+			}
 		}
 	})
 
@@ -1206,17 +1135,17 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 				if !errors.As(errModelQuota, &modelQuotaCooldown) {
 					t.Fatalf("modelQuota Execute() error = %T (%v), want *modelCooldownError", errModelQuota, errModelQuota)
 				}
-				if got := modelQuotaCooldown.Headers().Get("Anthropic-Ratelimit-Unified-Status"); got != "rejected" {
-					t.Fatalf("modelQuota Anthropic-Ratelimit-Unified-Status = %q, want rejected", got)
+				if got := modelQuotaCooldown.Headers().Get("Anthropic-Ratelimit-Unified-Status"); got != "" {
+					t.Fatalf("modelQuota status without native claim = %q, want empty", got)
 				}
-				if got := modelQuotaCooldown.Headers().Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "five_hour" {
-					t.Fatalf("modelQuota Representative-Claim = %q, want five_hour", got)
+				if got := modelQuotaCooldown.Headers().Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "" {
+					t.Fatalf("modelQuota inferred Representative-Claim = %q, want empty", got)
 				}
 			})
 		}
 	})
 
-	t.Run("retains unified headers when late success refreshes passive signals during active cooldown", func(t *testing.T) {
+	t.Run("retains cooldown but not native reset proof after passive success observation", func(t *testing.T) {
 		for _, useAffinity := range []bool{true, false} {
 			pathName := "scheduler"
 			if useAffinity {
@@ -1339,14 +1268,14 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 					ExecutionSeq: staleSeq,
 				})
 
-				// Step 3: Subsequent requests during active cooldown still emit unified rate-limit headers.
+				// Active local deadlines survive, but allowed observations do not prove a native rejection.
 				for _, tc := range []struct {
 					model     string
 					wantClaim string
 				}{
-					{model: credModel, wantClaim: "seven_day"},
-					{model: restoredModel, wantClaim: "five_hour"},
-					{model: modelScopedModel, wantClaim: "seven_day"},
+					{model: credModel, wantClaim: ""},
+					{model: restoredModel, wantClaim: ""},
+					{model: modelScopedModel, wantClaim: ""},
 				} {
 					_, errExec := manager.Execute(context.Background(), []string{"claude"}, cliproxyexecutor.Request{Model: tc.model}, cliproxyexecutor.Options{})
 					var cdErr *modelCooldownError
@@ -1354,8 +1283,8 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 						t.Fatalf("%s Execute() error = %T (%v), want *modelCooldownError", tc.model, errExec, errExec)
 					}
 					hdr := cdErr.Headers()
-					if got := hdr.Get("Anthropic-Ratelimit-Unified-Status"); got != "rejected" {
-						t.Fatalf("%s Anthropic-Ratelimit-Unified-Status = %q, want rejected", tc.model, got)
+					if got := hdr.Get("Anthropic-Ratelimit-Unified-Status"); got != "" {
+						t.Fatalf("%s stale Anthropic-Ratelimit-Unified-Status = %q, want empty", tc.model, got)
 					}
 					if got := hdr.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != tc.wantClaim {
 						t.Fatalf("%s Representative-Claim = %q, want %s", tc.model, got, tc.wantClaim)
@@ -1454,7 +1383,7 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 		}
 	})
 
-	t.Run("persists and restores model-scoped unified cooldown headers across restart", func(t *testing.T) {
+	t.Run("restores model cooldown without promoting persisted signals to native reset proof", func(t *testing.T) {
 		for _, useAffinity := range []bool{true, false} {
 			pathName := "scheduler"
 			if useAffinity {
@@ -1523,23 +1452,23 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 					t.Fatalf("%s Execute() error = %T (%v), want *modelCooldownError", pathName, errExec, errExec)
 				}
 				hdr := cdErr.Headers()
-				if got := hdr.Get("Anthropic-Ratelimit-Unified-Status"); got != "rejected" {
-					t.Fatalf("%s restored Anthropic-Ratelimit-Unified-Status = %q, want rejected", pathName, got)
+				if got := hdr.Get("Anthropic-Ratelimit-Unified-Status"); got != "" {
+					t.Fatalf("%s restored status without live observation = %q, want empty", pathName, got)
 				}
-				if got := hdr.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "seven_day" {
-					t.Fatalf("%s restored Representative-Claim = %q, want seven_day", pathName, got)
+				if got := hdr.Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "" {
+					t.Fatalf("%s restored claim without live observation = %q, want empty", pathName, got)
 				}
-				if got := hdr.Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "rejected" {
-					t.Fatalf("%s restored 7d-Status = %q, want rejected", pathName, got)
+				if got := hdr.Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "" {
+					t.Fatalf("%s restored 7d-Status = %q, want empty", pathName, got)
 				}
-				if got := hdr.Get("Anthropic-Ratelimit-Unified-5h-Status"); got != "allowed" {
-					t.Fatalf("%s restored 5h-Status = %q, want allowed", pathName, got)
+				if got := hdr.Get("Anthropic-Ratelimit-Unified-5h-Status"); got != "" {
+					t.Fatalf("%s restored 5h-Status = %q, want empty", pathName, got)
 				}
 			})
 		}
 	})
 
-	t.Run("keeps longer cooldown window signals when shorter out-of-order 429 completes later", func(t *testing.T) {
+	t.Run("keeps local deadline but reports only the latest validated native observation", func(t *testing.T) {
 		for _, useAffinity := range []bool{true, false} {
 			pathName := "scheduler"
 			if useAffinity {
@@ -1669,11 +1598,11 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 					if !errors.As(errExec, &cdErr) {
 						t.Fatalf("%s Execute() error = %T (%v), want *modelCooldownError", m, errExec, errExec)
 					}
-					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "seven_day" {
-						t.Fatalf("%s Representative-Claim = %q, want seven_day (from governing 2h deadline)", m, got)
+					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "five_hour" {
+						t.Fatalf("%s Representative-Claim = %q, want latest observed five_hour", m, got)
 					}
-					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "rejected" {
-						t.Fatalf("%s 7d-Status = %q, want rejected", m, got)
+					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-7d-Status"); got != "" {
+						t.Fatalf("%s non-allowlisted 7d-Status = %q, want empty", m, got)
 					}
 				}
 
@@ -1886,7 +1815,7 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 		}
 	})
 
-	t.Run("keeps active cooldown signals when hintless RetryAfter nil 429 reuses existing deadline", func(t *testing.T) {
+	t.Run("keeps local cooldown without reusing stale reset proof after hintless 429", func(t *testing.T) {
 		for _, useAffinity := range []bool{true, false} {
 			pathName := "scheduler"
 			if useAffinity {
@@ -2002,8 +1931,8 @@ func TestModelCooldownError_ClaudeUnifiedRateLimitHeaders(t *testing.T) {
 					if !errors.As(errExec, &cdErr) {
 						t.Fatalf("%s Execute() error = %T (%v), want *modelCooldownError", m, errExec, errExec)
 					}
-					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "seven_day" {
-						t.Fatalf("%s Representative-Claim = %q, want seven_day", m, got)
+					if got := cdErr.Headers().Get("Anthropic-Ratelimit-Unified-Representative-Claim"); got != "" {
+						t.Fatalf("%s claim without current reset proof = %q, want empty", m, got)
 					}
 				}
 			})

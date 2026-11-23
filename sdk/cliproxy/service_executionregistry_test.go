@@ -2834,8 +2834,8 @@ func TestServiceApplyConfigRuntimePreservesSelectorForUnchangedRouting(t *testin
 		t.Fatal("changed-routing config runtime apply failed")
 	}
 	changedSelector := manager.Selector()
-	if changedSelector == initialSelector {
-		t.Fatal("changed-routing selector retained original identity")
+	if changedSelector != initialSelector {
+		t.Fatal("compatible changed-routing selector lost native affinity state")
 	}
 	changedAffinity, ok := changedSelector.(*coreauth.SessionAffinitySelector)
 	if !ok {
@@ -2859,7 +2859,7 @@ func TestServiceApplyConfigRuntimePreservesSelectorForUnchangedRouting(t *testin
 	}
 }
 
-func TestServiceApplyConfigRuntimeSessionAffinitySubagentsChangeRecreatesSelector(t *testing.T) {
+func TestServiceApplyConfigRuntimeSessionAffinitySubagentsChangePreservesSelector(t *testing.T) {
 	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
 	service := &Service{cfg: &config.Config{}, coreManager: manager}
 
@@ -2886,8 +2886,12 @@ func TestServiceApplyConfigRuntimeSessionAffinitySubagentsChangeRecreatesSelecto
 		t.Fatal("changed config runtime apply failed")
 	}
 	changedSelector := manager.Selector()
-	if changedSelector == initialSelector {
-		t.Fatal("changing SessionAffinitySubagents should recreate selector")
+	if changedSelector != initialSelector {
+		t.Fatal("changing SessionAffinitySubagents must preserve compatible native state")
+	}
+	snapshot, err := manager.SnapshotAffinity(time.Now())
+	if err != nil || snapshot.SubagentAffinity {
+		t.Fatalf("subagent policy was not updated: %v", err)
 	}
 }
 
@@ -2923,7 +2927,7 @@ func TestServiceApplyConfigRuntimeSessionAffinityDisabledSubagentsChangeIsNoOp(t
 	}
 }
 
-func TestServiceApplyConfigRuntimeSessionAffinityRebindOnChangeRecreatesSelector(t *testing.T) {
+func TestServiceApplyConfigRuntimeSessionAffinityRebindOnChangePreservesSelector(t *testing.T) {
 	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
 	service := &Service{cfg: &config.Config{}, coreManager: manager}
 
@@ -2961,8 +2965,8 @@ func TestServiceApplyConfigRuntimeSessionAffinityRebindOnChangeRecreatesSelector
 		t.Fatal("changed config runtime apply failed")
 	}
 	changedSelector := manager.Selector()
-	if changedSelector == initialSelector {
-		t.Fatal("changing SessionAffinityRebindOn should recreate selector")
+	if changedSelector != initialSelector {
+		t.Fatal("changing SessionAffinityRebindOn must preserve compatible native state")
 	}
 
 	neverCfg := service.commitConfigUpdate(&config.Config{Routing: internalconfig.RoutingConfig{
@@ -2975,8 +2979,8 @@ func TestServiceApplyConfigRuntimeSessionAffinityRebindOnChangeRecreatesSelector
 		t.Fatal("never config runtime apply failed")
 	}
 	neverSelector := manager.Selector()
-	if neverSelector == changedSelector {
-		t.Fatal("changing SessionAffinityRebindOn to never should recreate selector")
+	if neverSelector != changedSelector {
+		t.Fatal("changing SessionAffinityRebindOn to never must preserve compatible native state")
 	}
 
 	sameNeverCfg := service.commitConfigUpdate(&config.Config{Routing: internalconfig.RoutingConfig{
@@ -3001,8 +3005,8 @@ func TestServiceApplyConfigRuntimeSessionAffinityRebindOnChangeRecreatesSelector
 	if !service.applyConfigRuntime(context.Background(), backToAnyCfg, false) {
 		t.Fatal("back to any config runtime apply failed")
 	}
-	if manager.Selector() == neverSelector {
-		t.Fatal("changing SessionAffinityRebindOn from never to any should recreate selector")
+	if manager.Selector() != neverSelector {
+		t.Fatal("changing SessionAffinityRebindOn from never to any must preserve compatible native state")
 	}
 }
 

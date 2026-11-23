@@ -10,6 +10,49 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 )
 
+func TestOpenAIChatCompletionResponsesServiceTierUsesUpstream(t *testing.T) {
+	t.Parallel()
+	request := []byte(`{"model":"gpt-test","service_tier":"priority"}`)
+	for _, tc := range []struct {
+		name string
+		tier string
+		want string
+	}{
+		{name: "downgraded", tier: `"default"`, want: "default"},
+		{name: "fast", tier: `"priority"`, want: "priority"},
+		{name: "missing", tier: "", want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chunk := `data: {"id":"chat_fast","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]`
+			if tc.tier != "" {
+				chunk += `,"service_tier":` + tc.tier
+			}
+			chunk += `}`
+			var state any
+			ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "gpt-test", request, request, []byte(chunk), &state)
+			outputs := ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "gpt-test", request, request, []byte(`data: [DONE]`), &state)
+			var streamTier string
+			for _, output := range outputs {
+				if event, data := parseOpenAIResponsesSSEEvent(t, output); event == "response.completed" {
+					streamTier = data.Get("response.service_tier").String()
+				}
+			}
+			if streamTier != tc.want {
+				t.Fatalf("stream tier = %q, want %q", streamTier, tc.want)
+			}
+			raw := `{"id":"chat_fast","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]`
+			if tc.tier != "" {
+				raw += `,"service_tier":` + tc.tier
+			}
+			raw += `}`
+			nonStream := ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(context.Background(), "gpt-test", request, request, []byte(raw), nil)
+			if got := ojson.GetBytes(nonStream, "service_tier").String(); got != tc.want {
+				t.Fatalf("nonstream tier = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func parseOpenAIResponsesSSEEvent(t *testing.T, chunk []byte) (string, ojson.Result) {
 	t.Helper()
 

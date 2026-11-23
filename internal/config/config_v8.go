@@ -285,6 +285,7 @@ func (cfg *Config) UnmarshalYAML(node *yaml.Node) error {
 		return errID
 	}
 	decoded := legacyConfig(*cfg)
+	decoded.KVStore = KVStoreConfig{Disabled: true}
 	if err = root.Decode(&decoded); err != nil {
 		return err
 	}
@@ -317,6 +318,11 @@ func flattenV8(node *yaml.Node) (*yaml.Node, error) {
 		return nil, err
 	}
 	node = expandConfigAliases(node)
+	// Canonical null disables KV, including over a legacy persistence opt-in.
+	if kv := yamlPath(node, "server.kv-store"); kv != nil && kv.Tag == "!!null" {
+		kv.Kind, kv.Tag, kv.Value = yaml.MappingNode, "!!map", ""
+		setYAMLPath(kv, "disabled", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
+	}
 	if _, err := normalizeV8PrivateIPAlias(node, true); err != nil {
 		return nil, err
 	}
@@ -1055,7 +1061,7 @@ func normalizeV8PrivateIPAlias(root *yaml.Node, migrate bool) (bool, error) {
 
 // restoreV8Layout lets v0 handlers update the effective runtime fields without
 // reintroducing their legacy spellings into an existing v8 document.
-func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.Node) error {
+func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.Node, warnings *[]configFileWarning) error {
 	for _, path := range v8Paths {
 		upstreams := yamlPath(layout, "api-keys")
 		clientKeyCollision := path.old == "api-keys" && upstreams != nil && upstreams.Kind == yaml.MappingNode
@@ -1077,7 +1083,7 @@ func restoreV8Layout(root, layout *yaml.Node, original []byte, generated *yaml.N
 			continue
 		}
 		if baseline == nil {
-			cfg, err := ParseConfigBytes(original)
+			cfg, err := parseConfigBytes(original, warnings)
 			if err != nil {
 				return err
 			}

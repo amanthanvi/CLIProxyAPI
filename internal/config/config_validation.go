@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/regexp"
@@ -11,16 +12,20 @@ import (
 
 // SanitizePayloadRules drops invalid rules and skips invalid regex entries individually.
 func (cfg *Config) SanitizePayloadRules() {
+	cfg.sanitizePayloadRules(nil)
+}
+
+func (cfg *Config) sanitizePayloadRules(warnings *[]configFileWarning) {
 	if cfg == nil {
 		return
 	}
-	cfg.Payload.DefaultRaw = sanitizePayloadRawRules(cfg.Payload.DefaultRaw, "default-raw")
-	cfg.Payload.OverrideRaw = sanitizePayloadRawRules(cfg.Payload.OverrideRaw, "override-raw")
+	cfg.Payload.DefaultRaw = sanitizePayloadRawRules(cfg.Payload.DefaultRaw, "default-raw", warnings)
+	cfg.Payload.OverrideRaw = sanitizePayloadRawRules(cfg.Payload.OverrideRaw, "override-raw", warnings)
 	if len(cfg.Payload.Replace) > 0 {
 		valid := make([]PayloadReplaceRule, 0, len(cfg.Payload.Replace))
 		for i, rule := range cfg.Payload.Replace {
 			if errValidate := rule.Validate(); errValidate != nil {
-				log.Warnf("payload.replace rule %d dropped: invalid rule", i+1)
+				recordConfigFileWarning(warnings, nil, fmt.Sprintf("payload.replace rule %d dropped: invalid rule", i+1))
 				continue
 			}
 			replacements := make([]PayloadReplacement, 0, len(rule.Replacements))
@@ -29,7 +34,7 @@ func (cfg *Config) SanitizePayloadRules() {
 				if len(replacement) == 2 {
 					pattern := replacement["pattern"]
 					if _, errCompile := regexp.Compile(pattern); pattern == "" || errCompile != nil {
-						log.Warnf("payload.replace rule %d replacement %d skipped: invalid regex", i+1, j+1)
+						recordConfigFileWarning(warnings, nil, fmt.Sprintf("payload.replace rule %d replacement %d skipped: invalid regex", i+1, j+1))
 						continue
 					}
 				}
@@ -45,7 +50,7 @@ func (cfg *Config) SanitizePayloadRules() {
 	}
 }
 
-func sanitizePayloadRawRules(rules []PayloadRule, section string) []PayloadRule {
+func sanitizePayloadRawRules(rules []PayloadRule, section string, warnings *[]configFileWarning) []PayloadRule {
 	if len(rules) == 0 {
 		return rules
 	}
@@ -63,11 +68,11 @@ func sanitizePayloadRawRules(rules []PayloadRule, section string) []PayloadRule 
 			}
 			trimmed := bytes.TrimSpace(raw)
 			if len(trimmed) == 0 || !json.Valid(trimmed) {
-				log.WithFields(log.Fields{
+				recordConfigFileWarning(warnings, log.Fields{
 					"section":    section,
 					"rule_index": i + 1,
 					"param":      path,
-				}).Warn("payload rule dropped: invalid raw JSON")
+				}, "payload rule dropped: invalid raw JSON")
 				invalid = true
 				break
 			}

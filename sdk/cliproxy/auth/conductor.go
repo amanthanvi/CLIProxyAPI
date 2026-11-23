@@ -204,6 +204,7 @@ type Manager struct {
 	selector                  Selector
 	hook                      *hookChain
 	resultPolicy              atomic.Pointer[resultPolicyHolder]
+	affinityDrain             atomic.Pointer[affinityExecutionDrain]
 	mu                        sync.RWMutex
 	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex

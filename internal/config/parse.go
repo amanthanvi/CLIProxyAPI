@@ -12,6 +12,10 @@ import (
 // ParseConfigBytes parses a YAML configuration payload into Config and applies the same
 // in-memory normalizations as LoadConfigOptional, without persisting any changes to disk.
 func ParseConfigBytes(data []byte) (*Config, error) {
+	return parseConfigBytes(data, nil)
+}
+
+func parseConfigBytes(data []byte, warnings *[]configFileWarning) (*Config, error) {
 	parsed, err := validateStartupConfig(data, false)
 	if err != nil {
 		return nil, err
@@ -19,7 +23,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if errHash := parsed.hashManagementSecret(); errHash != nil {
 		return nil, errHash
 	}
-	parsed.cfg.sanitizeStartupConfig()
+	parsed.cfg.sanitizeStartupConfig(warnings)
 	return parsed.cfg, nil
 }
 
@@ -35,6 +39,7 @@ func ParsePreparedConfigBytes(data []byte) (*Config, error) {
 		return nil, errParse
 	}
 	cfg.SourceHash = ComputeSourceHash(data)
+	cfg.ParsedSourceHash = cfg.SourceHash
 	return cfg, nil
 }
 
@@ -137,13 +142,6 @@ func validateStartupConfig(data []byte, optional bool) (*startupConfig, error) {
 		cfg.ErrorLogsMaxFiles = 10
 	}
 
-	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
-		cfg.RedisUsageQueueRetentionSeconds = 60
-	} else if cfg.RedisUsageQueueRetentionSeconds > 3600 {
-		log.WithField("value", cfg.RedisUsageQueueRetentionSeconds).Warn("redis-usage-queue-retention-seconds too large; clamping to 3600")
-		cfg.RedisUsageQueueRetentionSeconds = 3600
-	}
-
 	if cfg.MaxRetryCredentials < 0 {
 		cfg.MaxRetryCredentials = 0
 	}
@@ -157,7 +155,13 @@ func validateStartupConfig(data []byte, optional bool) (*startupConfig, error) {
 	return &startupConfig{cfg: &cfg, docs: docs}, nil
 }
 
-func (cfg *Config) sanitizeStartupConfig() {
+func (cfg *Config) sanitizeStartupConfig(warnings *[]configFileWarning) {
+	if cfg.RedisUsageQueueRetentionSeconds <= 0 {
+		cfg.RedisUsageQueueRetentionSeconds = 60
+	} else if cfg.RedisUsageQueueRetentionSeconds > 3600 {
+		recordConfigFileWarning(warnings, log.Fields{"value": cfg.RedisUsageQueueRetentionSeconds}, "redis-usage-queue-retention-seconds too large; clamping to 3600")
+		cfg.RedisUsageQueueRetentionSeconds = 3600
+	}
 	// Apply the same sanitization pipeline.
 	cfg.SanitizeGeminiKeys()
 	cfg.SanitizeInteractionsKeys()
@@ -166,17 +170,16 @@ func (cfg *Config) sanitizeStartupConfig() {
 	cfg.SanitizeXAIKeys()
 	cfg.SanitizeMetaKeys()
 	cfg.SanitizeCodexHeaderDefaults()
-	cfg.SanitizeClaudeHeaderDefaults()
-	cfg.SanitizeClaudeKeys()
-	cfg.SanitizeAntigravity()
-	cfg.SanitizeDevin()
+	cfg.sanitizeClaudeHeaderDefaults(warnings)
+	cfg.sanitizeClaudeKeys(warnings)
+	cfg.sanitizeAntigravity(warnings)
+	cfg.sanitizeDevin(warnings)
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
 	cfg.SanitizeOAuthSettings()
 	cfg.SanitizeOAuthRequestScopedErrors()
-	cfg.SanitizePayloadRules()
-
+	cfg.sanitizePayloadRules(warnings)
 }
 
 func (p *startupConfig) hashManagementSecret() error {

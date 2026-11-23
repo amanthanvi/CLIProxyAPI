@@ -32,11 +32,25 @@ func TestServiceApplyKVStoreConfig_LifecycleAndHotReload(t *testing.T) {
 		t.Fatalf("CurrentKVClient(unmanaged applyConfigUpdate) = %v, %v, %v; want nil, false, nil", client, active, errClient)
 	}
 
-	// Default configuration (Disabled: false, Path: "") opens <auth-dir>/kv.db.
+	// A zero-value SDK configuration must not mutate the existing auth directory.
 	svc := &Service{}
 	svc.applyKVStoreConfig(&config.Config{
 		AuthDir: authDir,
 	})
+	if client, active, errClient := kvstore.CurrentKVClient(); client != nil || active || errClient != nil {
+		t.Fatalf("CurrentKVClient(default disabled) = %v, %v, %v; want nil, false, nil", client, active, errClient)
+	}
+	if _, errStat := os.Stat(authDir); !os.IsNotExist(errStat) {
+		t.Fatalf("default configuration mutated auth directory: %v", errStat)
+	}
+
+	// An explicit section can opt in to the default <auth-dir>/kv.db path.
+	explicitCfg, errParse := config.ParseConfigBytes([]byte("config-version: 8\nserver:\n  kv-store:\n    disabled: false\n"))
+	if errParse != nil {
+		t.Fatal(errParse)
+	}
+	explicitCfg.AuthDir = authDir
+	svc.applyKVStoreConfig(explicitCfg)
 	clientDefault, active, errClient := kvstore.CurrentKVClient()
 	if errClient != nil || !active || clientDefault == nil {
 		t.Fatalf("CurrentKVClient(default enabled) = %v, %v, %v; want client, true, nil", clientDefault, active, errClient)

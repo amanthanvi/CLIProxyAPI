@@ -54,12 +54,14 @@ func echoRequests() []struct {
 
 // Golden hashes captured from the pre-optimization implementation; the
 // single-pass echo extraction must keep stream and non-stream outputs
-// byte-identical.
+// byte-identical. The managed overlay reports service_tier only from the
+// upstream response, so "full" no longer echoes the request's service_tier;
+// that removal is its only difference from the upstream golden output.
 var echoGoldenHashes = map[string][2]string{
 	"nil":             {"12e174a662e5387285c18447eacd8f21802f391689b43a855718bd3a7962a8d2", "1c76155d2c138f38f71aeb380c3bfc873486725a0a3da29d1484461831b729cc"},
 	"empty-object":    {"12e174a662e5387285c18447eacd8f21802f391689b43a855718bd3a7962a8d2", "1c76155d2c138f38f71aeb380c3bfc873486725a0a3da29d1484461831b729cc"},
 	"malformed":       {"12e174a662e5387285c18447eacd8f21802f391689b43a855718bd3a7962a8d2", "1c76155d2c138f38f71aeb380c3bfc873486725a0a3da29d1484461831b729cc"},
-	"full":            {"211b3a1fca607e01a1414e8cdefd2356369c5881284c09148ba2ac22df6b469f", "d9f230169b59ea6c2ab91910f9161656139cde3c44df55dee7c615798f5a687b"},
+	"full":            {"8b5e781b9311bdbe7309b92dfbbfdcb0001d6115af5535a52d1bb8ad38af4760", "6d565b4dd35c5ac4f5f9a8c4a6df22b4a8dd12440641087e56c821225c300df8"},
 	"weird-types":     {"b09dc247fa502d2dab743a6a8eb0f09e0c99bf4da1b231f1db2843d25a93deee", "42ec2fafcf76c77924dafdfabef14d7df28da2166f4a50c20f1be5217a5ca907"},
 	"duplicate-keys":  {"a446996117b660ec33d1f59b669295486de62d2b273f9bd9d7932f32a01fbbcf", "b65bee2aeb837e91af32ceecc962e92d06db59a1184461c4bd53fe337a892a4f"},
 	"escaped-key":     {"c1183fc24b5774533d05e66db7c43725ab4757de1df267b858afd401f6fe3004", "290d5be1207223112672ee6d9cfe7abc4d6b6d9f03a3b05c46ff83a2e63d9fd2"},

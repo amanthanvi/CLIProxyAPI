@@ -60,6 +60,9 @@ func convertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream,
 	_ = outDoc.Set("max_tokens", defaultClaudeChatMaxTokensForModel(modelName))
 
 	root := util.ParseGJSONBytesNoCopy(rawJSON)
+	if tier := root.Get("service_tier"); tier.Type == ojson.String && (tier.String() == "fast" || tier.String() == "priority") {
+		_ = outDoc.Set("speed", "fast")
+	}
 
 	// Convert OpenAI reasoning_effort to Claude thinking config.
 	if v := root.Get("reasoning_effort"); v.Exists() {

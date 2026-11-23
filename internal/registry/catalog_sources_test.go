@@ -136,7 +136,7 @@ func TestRefreshModelCatalogsOnDemand(t *testing.T) {
 	oldDevin, _ := GetDevinModelsSnapshot()
 	oldModelsURLs := modelsURLs
 	oldGeneralPublish := generalCatalogUpdater.publish
-	oldCodexPublish := codexCatalogUpdater.publish
+	oldCodexPublish := codexCatalogUpdater.publishWithSource
 	oldDevinPublish := devinCatalogUpdater.publish
 	catalogRuntime.Lock()
 	oldCtx, oldLocal, oldSources, oldHome := catalogRuntime.ctx, catalogRuntime.local, catalogRuntime.sources, catalogRuntime.home
@@ -178,7 +178,7 @@ func TestRefreshModelCatalogsOnDemand(t *testing.T) {
 		codexCatalogUpdater.cancel = nil
 		codexCatalogUpdater.ctx = nil
 		codexCatalogUpdater.source = ""
-		codexCatalogUpdater.publish = oldCodexPublish
+		codexCatalogUpdater.publishWithSource = oldCodexPublish
 		codexCatalogUpdater.mu.Unlock()
 		devinCatalogUpdater.mu.Lock()
 		if devinCatalogUpdater.cancel != nil {
@@ -216,8 +216,8 @@ func TestRefreshModelCatalogsOnDemand(t *testing.T) {
 	}
 	generalCatalogUpdater.mu.Unlock()
 	codexCatalogUpdater.mu.Lock()
-	codexCatalogUpdater.publish = func(data []byte) ([]string, error) {
-		changed, errPub := oldCodexPublish(data)
+	codexCatalogUpdater.publishWithSource = func(data []byte, configuredSource, resolvedSource string) ([]string, error) {
+		changed, errPub := oldCodexPublish(data, configuredSource, resolvedSource)
 		if errPub == nil {
 			select {
 			case codexPublished <- struct{}{}:

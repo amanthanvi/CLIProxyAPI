@@ -33,6 +33,7 @@ type responsesLocalInterrupt struct {
 	mu           sync.Mutex
 	active       bool
 	wsTurnActive bool
+	responseID   string
 	frames       chan []byte
 }
 
@@ -50,6 +51,7 @@ func (s *responsesLocalInterrupt) begin(websocketOwned bool) {
 	s.mu.Lock()
 	s.active = true
 	s.wsTurnActive = websocketOwned
+	s.responseID = ""
 	s.mu.Unlock()
 }
 
@@ -61,6 +63,7 @@ func (s *responsesLocalInterrupt) reactivate() {
 	}
 	s.mu.Lock()
 	s.active = true
+	s.responseID = ""
 	s.mu.Unlock()
 }
 
@@ -115,14 +118,35 @@ func (s *responsesLocalInterrupt) deliver(payload []byte) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.active || s.wsTurnActive {
+	if !s.active || s.wsTurnActive || s.responseID == "" || ojson.GetBytesNoCopy(payload, "response_id").String() != s.responseID {
 		return false
 	}
 	select {
 	case s.frames <- bytes.Clone(payload):
+		s.responseID = ""
 		return true
 	default:
 		return false
+	}
+}
+
+// observe correlates controls before the client can react to an event.
+func (s *responsesLocalInterrupt) observe(payload []byte) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active {
+		return
+	}
+	switch ojson.GetBytesNoCopy(payload, "type").String() {
+	case "response.created":
+		s.responseID = strings.Clone(ojson.GetBytesNoCopy(payload, "response.id").String())
+	case "response.completed", "response.done", "response.incomplete", "response.failed":
+		if ojson.GetBytesNoCopy(payload, "response.id").String() == s.responseID {
+			s.responseID = ""
+		}
 	}
 }
 
