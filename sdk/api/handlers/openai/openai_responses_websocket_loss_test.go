@@ -35,6 +35,7 @@ type lossFixture struct {
 	t           *testing.T
 	base        *handlers.BaseAPIHandler
 	client      *websocket.Conn
+	wsURL       string
 	connections atomic.Int32
 	creates     atomic.Int32
 	authIDs     sync.Map
@@ -107,7 +108,8 @@ func newLossFixture(t *testing.T, steering bool, script func(index int, c *webso
 	router.GET("/v1/responses", h.ResponsesWebsocket)
 	downstream := httptest.NewServer(router)
 	t.Cleanup(downstream.Close)
-	client, resp, errDial := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(downstream.URL, "http")+"/v1/responses", header)
+	f.wsURL = "ws" + strings.TrimPrefix(downstream.URL, "http") + "/v1/responses"
+	client, resp, errDial := websocket.DefaultDialer.Dial(f.wsURL, header)
 	if resp != nil && resp.Body != nil {
 		defer func() {
 			if errClose := resp.Body.Close(); errClose != nil {

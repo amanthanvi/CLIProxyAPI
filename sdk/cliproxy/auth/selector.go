@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"maps"
@@ -110,6 +111,7 @@ type modelCooldownError struct {
 	resetIn            time.Duration
 	provider           string
 	cause              error
+	selectorGenerated  bool
 	claudeCooldown     bool
 	claudeSignals      map[string]string
 	claudeResetHeaders http.Header
@@ -124,7 +126,16 @@ func (e *modelCooldownError) ClaudeRateLimitResponseHeaders() http.Header {
 
 // NewModelCooldownError creates an error representing model-level cooldown.
 func NewModelCooldownError(model, provider string, resetIn time.Duration) error {
-	return newModelCooldownErrorWithCause(model, provider, resetIn, nil)
+	err := newModelCooldownErrorWithCause(model, provider, resetIn, nil)
+	err.selectorGenerated = false
+	return err
+}
+
+// IsSelectorModelCooldown reports a cooldown derived from local selection, not
+// a provider response or an error built by a caller with NewModelCooldownError.
+func IsSelectorModelCooldown(err error) bool {
+	var cooldown *modelCooldownError
+	return errors.As(err, &cooldown) && cooldown != nil && cooldown.selectorGenerated
 }
 
 func newModelCooldownError(model, provider string, resetIn time.Duration) *modelCooldownError {
@@ -140,12 +151,13 @@ func newModelCooldownErrorForCandidates(model, provider string, resetIn time.Dur
 		resetIn = 0
 	}
 	return &modelCooldownError{
-		model:          model,
-		provider:       provider,
-		resetIn:        resetIn,
-		cause:          cause,
-		claudeCooldown: claudeCooldown,
-		claudeSignals:  maps.Clone(claudeSignals),
+		model:             model,
+		provider:          provider,
+		resetIn:           resetIn,
+		cause:             cause,
+		selectorGenerated: true,
+		claudeCooldown:    claudeCooldown,
+		claudeSignals:     maps.Clone(claudeSignals),
 	}
 }
 

@@ -1026,9 +1026,21 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
 				lossWriteErr = writeResponsesWebsocketUpstreamLoss(writer, wsTimelineLog, errMsg)
 				return true
 			}
-			if !nativeWebsocketPassthrough || !requestRequiresCurrentUpstreamWebsocket || !pinnedAuthAttempted ||
+			if !nativeWebsocketPassthrough || !requestRequiresCurrentUpstreamWebsocket ||
 				!shouldReplayResponsesWebsocketPinnedAuthFailure(errMsg) {
 				return false
+			}
+			if !pinnedAuthAttempted {
+				// The pin can cool after validation but before any upstream send.
+				// Start a full replay just as for a pin already unavailable at validation.
+				// The fresh unpinned turn can select an alternate or prove pool exhaustion.
+				if selectedAuthObserved || executionAuthID != pinnedAuthID || errMsg.DirectResponse ||
+					responsesWebsocketErrorStatus(errMsg) != http.StatusTooManyRequests ||
+					!coreauth.IsSelectorModelCooldown(errMsg.Error) {
+					return false
+				}
+				replayedPinnedAuthFailure = true
+				return true
 			}
 			if (responsesWebsocketErrorStatus(errMsg) == http.StatusTooManyRequests || isResponsesWebsocketQuotaOrCooldownError(errMsg.Error)) &&
 				!h.responsesWebsocketHasAlternativeReplayTarget(cliCtx, modelName, requestJSON, lastAttemptedAuthID) {
